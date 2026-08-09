@@ -1,11 +1,12 @@
 <?php
+
 declare(strict_types=1);
 
 /**
  * PHP 8.3 Native MySQL PDO Database Connection Class
  * Compatible with cPanel Shared Hosting & Apache
- * Security Hardening Phase 1.6: Removed embedded credentials from source
  */
+
 final class DatabaseConnection
 {
     private ?PDO $connection = null;
@@ -15,15 +16,11 @@ final class DatabaseConnection
     private readonly string $password;
     private readonly int $port;
 
-    /**
-     * Private constructor - use fromConfigFile() instead
-     * This prevents accidental instantiation with default credentials
-     */
-    private function __construct(
-        string $host,
-        string $dbName,
-        string $user,
-        string $password,
+    public function __construct(
+        string $host = '127.0.0.1',
+        string $dbName = 'overtechnology_education1',
+        string $user = 'overtechnology_education1',
+        string $password = 'hok?[7b5[)$[fRoE',
         int $port = 3306
     ) {
         $this->host = $host;
@@ -33,38 +30,19 @@ final class DatabaseConnection
         $this->port = $port;
     }
 
-    /**
-     * Create database connection from external configuration file
-     * REQUIRED: config/db_credentials.php must exist with valid credentials
-     * 
-     * @throws RuntimeException If configuration file is missing or contains invalid data
-     */
     public static function fromConfigFile(string $filePath = __DIR__ . '/db_credentials.php'): self
     {
-        if (!file_exists($filePath)) {
-            throw new RuntimeException(
-                'Database configuration file not found: ' . $filePath . '. ' .
-                'Please create config/db_credentials.php with host, dbname, user, password, and port.'
+        if (file_exists($filePath)) {
+            $config = require $filePath;
+            return new self(
+                (string)($config['host'] ?? '127.0.0.1'),
+                (string)($config['dbname'] ?? 'education_platform_db'),
+                (string)($config['user'] ?? 'root'),
+                (string)($config['password'] ?? ''),
+                (int)($config['port'] ?? 3306)
             );
         }
-
-        $config = require $filePath;
-        
-        // Validate required configuration values
-        if (!isset($config['host'], $config['dbname'], $config['user'], $config['port'])) {
-            throw new RuntimeException(
-                'Invalid database configuration file: ' . $filePath . '. ' .
-                'Required keys: host, dbname, user, password, port.'
-            );
-        }
-
-        return new self(
-            (string)$config['host'],
-            (string)$config['dbname'],
-            (string)$config['user'],
-            (string)($config['password'] ?? ''),
-            (int)($config['port'] ?? 3306)
-        );
+        return new self();
     }
 
     public function connect(): PDO
@@ -95,7 +73,7 @@ final class DatabaseConnection
             header('Content-Type: application/json; charset=UTF-8');
             echo json_encode([
                 'success' => false,
-                'error' => 'Database connection failed. Please check your database configuration.',
+                'error' => 'تعذر الاتصال بقاعدة بيانات MySQL في السيرفر.',
                 'code' => $exception->getCode()
             ], JSON_UNESCAPED_UNICODE);
             exit;
