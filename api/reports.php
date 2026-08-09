@@ -3,12 +3,34 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../config/helper.php';
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
 
 Helper::handleCorsOptions();
 
+// SECURITY: Require authentication for reports endpoint
+$user = AuthManager::requireRole(['teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('reports');
+}
+
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
-    $teacherId = isset($_GET['teacher_id']) ? (int)$_GET['teacher_id'] : 1;
+    
+    // SECURITY: Extract teacher_id from session context
+    if ($user['role'] === 'teacher' || $user['role'] === 'staff') {
+        $teacherId = (int)$user['tenant_teacher_id'];
+        if ($teacherId <= 0) {
+            Helper::sendForbidden('Invalid teacher context');
+        }
+    } elseif ($user['role'] === 'super_admin') {
+        // SECURITY FIX: Super Admin should NOT access individual teacher reports per business rules
+        // Super Admin can only view platform-level aggregate reports, not tenant-specific data
+        Helper::sendForbidden('Super Admin cannot access individual teacher reports. Use super_admin.php for platform-level statistics.');
+    } else {
+        Helper::sendForbidden('Access denied');
+    }
     $reportType = Helper::sanitizeString($_GET['type'] ?? 'all');
 
     // 1. Students Report

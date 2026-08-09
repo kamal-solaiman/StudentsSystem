@@ -3,16 +3,52 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../config/helper.php';
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
 
 Helper::handleCorsOptions();
+
+// SECURITY: Require authentication for exams endpoint
+$user = AuthManager::requireRole(['teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('exams');
+}
+
+// SECURITY: Extract teacher_id from session context
+if ($user['role'] === 'teacher' || $user['role'] === 'staff') {
+    $currentTeacherId = (int)$user['tenant_teacher_id'];
+    if ($currentTeacherId <= 0) {
+        Helper::sendForbidden('Invalid teacher context');
+    }
+} else {
+    $currentTeacherId = null;
+}
 
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
     $method = $_SERVER['REQUEST_METHOD'];
 
+    // SECURITY: Verify CSRF token for state-changing methods
+    if (in_array($method, ['POST'], true)) {
+        $input = Helper::getJsonInput();
+        $csrfToken = $input['csrf_token'] ?? null;
+        if ($csrfToken === null || $csrfToken === '') {
+            $csrfToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+        }
+        if (!AuthManager::validateCsrfToken($csrfToken)) {
+            Helper::sendForbidden('Invalid CSRF token');
+        }
+    }
+
     // GET: Fetch question bank and exams for a teacher
     if ($method === 'GET') {
-        $teacherId = isset($_GET['teacher_id']) ? (int)$_GET['teacher_id'] : 1;
+        // SECURITY: Use authenticated teacher_id
+        $teacherId = $currentTeacherId;
+        if ($teacherId === null) {
+            // SECURITY FIX: Super Admin should NOT access individual teacher's questions/exams per business rules
+            Helper::sendForbidden('Super Admin cannot access individual teacher question bank. Use super_admin.php for platform management.');
+        }
 
         $stmtQb = $db->prepare('SELECT * FROM question_bank WHERE teacher_id = :tid ORDER BY id DESC');
         $stmtQb->execute(['tid' => $teacherId]);
@@ -50,7 +86,13 @@ try {
         $input = Helper::getJsonInput();
         $action = Helper::sanitizeString($input['action'] ?? '');
         $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
-        $teacherId = (int)($payload['teacher_id'] ?? 1);
+        
+        // SECURITY: Use authenticated teacher_id
+        $teacherId = $currentTeacherId;
+        if ($teacherId === null) {
+            // SECURITY FIX: Super Admin should NOT create questions/exams for individual teachers per business rules
+            Helper::sendForbidden('Super Admin cannot create questions or exams. This is a teacher-level operation.');
+        }
 
         // Add Question to Bank (4 types: mcq, true_false, essay, bubble_sheet)
         if ($action === 'create_question') {

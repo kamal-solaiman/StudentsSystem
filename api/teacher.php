@@ -7,13 +7,51 @@ require_once __DIR__ . '/../config/auth.php';
 
 Helper::handleCorsOptions();
 
+// SECURITY: Require authentication for all teacher endpoints
+$user = AuthManager::requireRole(['super_admin', 'teacher', 'staff']);
+
+// SECURITY: For staff, check dashboard access permission
+if ($user['role'] === 'staff') {
+    // Staff needs at least one permission to access teacher dashboard
+    // This allows them to see the dashboard but specific operations will require specific permissions
+    $permissions = AuthManager::getStaffPermissions();
+    if (empty($permissions)) {
+        Helper::sendForbidden('Access denied: No permissions assigned');
+    }
+}
+
+// SECURITY: Verify CSRF token for state-changing methods
+if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'DELETE'], true)) {
+    $input = Helper::getJsonInput();
+    $csrfToken = $input['csrf_token'] ?? null;
+    
+    // Also check header for CSRF token
+    if ($csrfToken === null || $csrfToken === '') {
+        $csrfToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+    }
+    
+    if (!AuthManager::validateCsrfToken($csrfToken)) {
+        Helper::sendForbidden('Invalid CSRF token');
+    }
+}
+
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
     $method = $_SERVER['REQUEST_METHOD'];
 
-    $teacherId = isset($_GET['teacher_id']) ? (int)$_GET['teacher_id'] : 1;
-    if ($teacherId <= 0) {
-        $teacherId = 1;
+    // SECURITY: Extract teacher_id from session context, not from request parameter
+    // For teachers and staff, use their tenant_teacher_id
+    if ($user['role'] === 'teacher' || $user['role'] === 'staff') {
+        $teacherId = (int)$user['tenant_teacher_id'];
+        if ($teacherId <= 0) {
+            Helper::sendForbidden('Invalid teacher context');
+        }
+    } elseif ($user['role'] === 'super_admin') {
+        // SECURITY FIX: Super Admin should NOT access individual teacher data per business rules
+        // Super Admin can only manage platform-level settings, not tenant-specific data
+        Helper::sendForbidden('Super Admin cannot access individual teacher dashboard. Use super_admin.php for platform management.');
+    } else {
+        Helper::sendForbidden('Access denied');
     }
 
     // GET: Fetch teacher dashboard data with complete Multi-Tenant isolation
@@ -157,6 +195,19 @@ try {
         $input = Helper::getJsonInput();
         $action = Helper::sanitizeString($input['action'] ?? '');
         $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
+
+        // SECURITY: For staff, check specific permission for each action
+        if ($user['role'] === 'staff') {
+            if ($action === 'create_class' || $action === 'delete-class') {
+                AuthManager::requirePermission('classes');
+            } elseif ($action === 'create_group' || $action === 'delete-group') {
+                AuthManager::requirePermission('groups');
+            } elseif ($action === 'create_student' || $action === 'enroll_existing_student') {
+                AuthManager::requirePermission('students');
+            } elseif ($action === 'update_teacher_settings') {
+                AuthManager::requirePermission('settings');
+            }
+        }
 
         // Create Academic Class
         if ($action === 'create_class') {
@@ -315,6 +366,15 @@ try {
     if ($method === 'DELETE') {
         $entity = Helper::sanitizeString($_GET['entity'] ?? '');
         $id = (int)($_GET['id'] ?? 0);
+
+        // SECURITY: For staff, check specific permission for each entity
+        if ($user['role'] === 'staff') {
+            if ($entity === 'class') {
+                AuthManager::requirePermission('classes');
+            } elseif ($entity === 'group') {
+                AuthManager::requirePermission('groups');
+            }
+        }
 
         if ($entity === 'class' && $id > 0) {
             $stmt = $db->prepare('DELETE FROM academic_classes WHERE id = :id AND teacher_id = :tid');

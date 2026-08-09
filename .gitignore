@@ -1,0 +1,38 @@
+# Security: Database credentials
+config/db_credentials.php
+
+# IDE/Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Cache
+*.cache
+.cache/
+
+# Local configuration
+env
+.env
+.env.local
+.env.*.local
+
+# Composer (if used in future)
+vendor/
+composer.lock
+
+# Node (if used in future)
+node_modules/
+package-lock.json
+
+# Build artifacts
+dist/
+build/

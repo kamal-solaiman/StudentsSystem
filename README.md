@@ -51,7 +51,7 @@ cpanel-php-dist/
 
 1. قم بإنشاء قاعدة بيانات MySQL جديدة من لوحة تحكم cPanel.
 2. قم باستيراد ملف **`database/schema.sql`** ثم ملف **`database/seed.sql`** من خلال phpMyAdmin.
-3. قم بنسخ ملف **`config/db_credentials.php`** (أو إنشائه) داخل مجلد `config/` بالصيغة التالية:
+3. قم بنسخ ملف **`config/db_credentials.php.template`** إلى **`config/db_credentials.php`** داخل مجلد `config/` ثم قم بتعديل الملف الجديد بإدخال بيانات قاعدة البيانات الخاصة بك:
 ```php
 <?php
 return [
@@ -59,8 +59,14 @@ return [
     'dbname'   => 'cpaneluser_education_db',
     'user'     => 'cpaneluser_admin',
     'password' => 'your_mysql_password',
-    'port'     => 3306
+    'port'     => 3306,
 ];
 ```
-4. ارفع جميع الملفات إلى مجلد `public_html/` أو النطاق الفرعي الخاص بك.
-5. افتح رابط موقعك لتعمل المنصة فوراً على سيرفرك.
+4. **مهم للأمان**: لا تقم برفع ملف `config/db_credentials.php` إلى مستودع Git. أضفه إلى ملف `.gitignore`.
+5. ارفع جميع الملفات (معدا `config/db_credentials.php`) إلى مجلد `public_html/` أو النطاق الفرعي الخاص بك.
+6. افتح رابط موقعك لتعمل المنصة فوراً على سيرفرك.
+
+### ⚠️ تحذير أمني
+- **لا تقم ابدا** بمشاركة ملف `config/db_credentials.php` أو محتوياته.
+- **لا تقم** بوضع بيانات قاعدة البيانات مباشرة في الكود المصدر.
+- **استخدم** ملف configuration خارج مستودع الكود.

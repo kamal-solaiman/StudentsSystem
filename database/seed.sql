@@ -28,7 +28,7 @@ ON DUPLICATE KEY UPDATE `center_name` = VALUES(`center_name`);
 
 -- 4. Teacher Staff
 INSERT INTO `teacher_staff` (`id`, `teacher_id`, `user_id`, `role_title`, `permissions`) VALUES
-(1, 1, 4, 'secretary', '["attendance", "students", "groups", "exams", "reports"]')
+(1, 1, 4, 'secretary', '["attendance", "students", "groups", "exams", "reports", "classes", "settings", "parent"]')
 ON DUPLICATE KEY UPDATE `role_title` = VALUES(`role_title`);
 
 -- 5. Academic Classes
