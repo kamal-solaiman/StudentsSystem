@@ -7,11 +7,96 @@ require_once __DIR__ . '/../config/auth.php';
 
 Helper::handleCorsOptions();
 
+// SECURITY: Require authentication for student endpoint
+$user = AuthManager::requireRole(['student', 'parent', 'teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('students');
+}
+
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
-    $studentId = isset($_GET['student_id']) ? (int)$_GET['student_id'] : 1;
+    
+    // SECURITY: Extract student_id from request, but validate access
+    $requestedStudentId = isset($_GET['student_id']) ? (int)$_GET['student_id'] : 0;
+    
+    // Determine which student data we can access based on user role
+    if ($user['role'] === 'student') {
+        // Student can only access their own data
+        // Find the student record for this user
+        $stmtStudentUser = $db->prepare('SELECT id FROM students WHERE user_id = :uid LIMIT 1');
+        $stmtStudentUser->execute(['uid' => $user['user_id']]);
+        $studentUser = $stmtStudentUser->fetch();
+        
+        if ($studentUser === false) {
+            Helper::sendForbidden('Student record not found for authenticated user');
+        }
+        
+        $studentId = (int)$studentUser['id'];
+        
+        // If a specific student_id was requested, verify it matches
+        if ($requestedStudentId > 0 && $requestedStudentId !== $studentId) {
+            Helper::sendForbidden('Access denied');
+        }
+        
+    } elseif ($user['role'] === 'parent') {
+        // Parent can access their children's data
+        // Verify the requested student belongs to this parent
+        if ($requestedStudentId <= 0) {
+            // Find first child of this parent
+            $stmtChild = $db->prepare('SELECT id FROM students WHERE parent_user_id = :puid OR parent_phone = :pphone LIMIT 1');
+            $stmtChild->execute([
+                'puid' => $user['user_id'],
+                'pphone' => $user['phone']
+            ]);
+            $child = $stmtChild->fetch();
+            if ($child === false) {
+                Helper::sendForbidden('No children found for this parent');
+            }
+            $studentId = (int)$child['id'];
+        } else {
+            // Verify this student belongs to the parent
+            $stmtVerify = $db->prepare('SELECT id FROM students WHERE id = :sid AND (parent_user_id = :puid OR parent_phone = :pphone) LIMIT 1');
+            $stmtVerify->execute([
+                'sid' => $requestedStudentId,
+                'puid' => $user['user_id'],
+                'pphone' => $user['phone']
+            ]);
+            $verified = $stmtVerify->fetch();
+            if ($verified === false) {
+                Helper::sendForbidden('Access denied');
+            }
+            $studentId = $requestedStudentId;
+        }
+        
+    } elseif ($user['role'] === 'teacher' || $user['role'] === 'staff') {
+        // Teacher/Staff can access students in their groups
+        if ($requestedStudentId <= 0) {
+            Helper::sendJson(['success' => false, 'message' => 'Student ID is required'], 400);
+        }
+        
+        // Verify this student is enrolled with the teacher
+        $teacherId = (int)$user['tenant_teacher_id'];
+        $stmtVerify = $db->prepare('SELECT se.id FROM student_enrollments se WHERE se.student_id = :sid AND se.teacher_id = :tid LIMIT 1');
+        $stmtVerify->execute([
+            'sid' => $requestedStudentId,
+            'tid' => $teacherId
+        ]);
+        if ($stmtVerify->fetch() === false) {
+            Helper::sendForbidden('Access denied');
+        }
+        $studentId = $requestedStudentId;
+        
+    } elseif ($user['role'] === 'super_admin') {
+        // Super admin should not access individual student data per business rules
+        Helper::sendForbidden('Access denied');
+    } else {
+        Helper::sendForbidden('Access denied');
+    }
+    
     if ($studentId <= 0) {
-        $studentId = 1;
+        Helper::sendJson(['success' => false, 'message' => 'Invalid student ID'], 400);
     }
 
     $stmtStudent = $db->prepare('SELECT * FROM students WHERE id = :sid LIMIT 1');
@@ -19,7 +104,7 @@ try {
     $student = $stmtStudent->fetch();
 
     if ($student === false) {
-        Helper::sendJson(['success' => false, 'error' => 'لم يتم العثور على الطالب الموحد'], 404);
+        Helper::sendJson(['success' => false, 'message' => 'Student not found'], 404);
     }
 
     // Subscriptions across Teachers (Multi-Tenant Unified Student link)

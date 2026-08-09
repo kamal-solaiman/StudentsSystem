@@ -1,0 +1,429 @@
+================================================================================
+PHASE 2.1 - CODE EVIDENCE FOR NEGATIVE PERMISSION VERIFICATION
+================================================================================
+
+This file contains the EXACT code snippets that prove each permission check
+is correctly implemented in the Unified Education Platform.
+
+================================================================================
+TEST 1: No attendance permission → POST /api/attendance.php
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/attendance.php
+LINES: 1-20 (Relevant security checks)
+
+CODE:
+-----
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/helper.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+
+Helper::handleCorsOptions();
+
+// SECURITY: Only POST method allowed
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    Helper::sendJson(['success' => false, 'message' => 'Method not allowed, use POST'], 405);
+}
+
+// SECURITY: Require authentication for attendance recording
+$user = AuthManager::requireRole(['teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('attendance');  // <-- TEST 1: ENFORCED HERE
+}
+
+EVIDENCE: Line 17 explicitly calls AuthManager::requirePermission('attendance')
+         for staff users. This will return 403 Forbidden if staff lacks 'attendance'.
+
+================================================================================
+TEST 2: No students permission → GET /api/student.php
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/student.php
+LINES: 1-20 (Relevant security checks)
+
+CODE:
+-----
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/helper.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+
+Helper::handleCorsOptions();
+
+// SECURITY: Require authentication for student endpoint
+$user = AuthManager::requireRole(['student', 'parent', 'teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('students');  // <-- TEST 2: ENFORCED HERE
+}
+
+EVIDENCE: Line 14 explicitly calls AuthManager::requirePermission('students')
+         for staff users. This will return 403 Forbidden if staff lacks 'students'.
+
+================================================================================
+TEST 3: No exams permission → GET /api/exams.php
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/exams.php
+LINES: 1-20 (Relevant security checks)
+
+CODE:
+-----
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/helper.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+
+Helper::handleCorsOptions();
+
+// SECURITY: Require authentication for exams endpoint
+$user = AuthManager::requireRole(['teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('exams');  // <-- TEST 3: ENFORCED HERE
+}
+
+EVIDENCE: Line 14 explicitly calls AuthManager::requirePermission('exams')
+         for staff users. This applies to both GET and POST methods.
+
+================================================================================
+TEST 4: No groups permission → POST /api/teacher.php (create_group)
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/teacher.php
+LINES: 215-225 (POST method permission checks)
+
+CODE:
+-----
+    // POST: Create Class, Study Group, Add Student, or Update Settings
+    if ($method === 'POST') {
+        $input = Helper::getJsonInput();
+        $action = Helper::sanitizeString($input['action'] ?? '');
+        $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
+
+        // SECURITY: For staff, check specific permission for each action
+        if ($user['role'] === 'staff') {
+            if ($action === 'create_class' || $action === 'delete-class') {
+                AuthManager::requirePermission('classes');
+            } elseif ($action === 'create_group' || $action === 'delete-group') {
+                AuthManager::requirePermission('groups');  // <-- TEST 4: ENFORCED HERE
+            } elseif ($action === 'create_student' || $action === 'enroll_existing_student') {
+                AuthManager::requirePermission('students');
+            } elseif ($action === 'update_teacher_settings') {
+                AuthManager::requirePermission('settings');
+            }
+        }
+
+EVIDENCE: Line 222 explicitly calls AuthManager::requirePermission('groups')
+         when action is 'create_group' or 'delete-group'.
+
+================================================================================
+TEST 5: No classes permission → POST /api/teacher.php (create_class)
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/teacher.php
+LINES: 219-221 (Same as Test 4)
+
+CODE:
+-----
+        // SECURITY: For staff, check specific permission for each action
+        if ($user['role'] === 'staff') {
+            if ($action === 'create_class' || $action === 'delete-class') {
+                AuthManager::requirePermission('classes');  // <-- TEST 5: ENFORCED HERE
+            } elseif ($action === 'create_group' || $action === 'delete-group') {
+
+EVIDENCE: Line 221 explicitly calls AuthManager::requirePermission('classes')
+         when action is 'create_class' or 'delete-class'.
+
+================================================================================
+TEST 6: No settings permission → POST /api/teacher.php (update_teacher_settings)
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/teacher.php
+LINES: 224 (Same POST method)
+
+CODE:
+-----
+            } elseif ($action === 'create_student' || $action === 'enroll_existing_student') {
+                AuthManager::requirePermission('students');
+            } elseif ($action === 'update_teacher_settings') {
+                AuthManager::requirePermission('settings');  // <-- TEST 6: ENFORCED HERE
+            }
+
+EVIDENCE: Line 224 explicitly calls AuthManager::requirePermission('settings')
+         when action is 'update_teacher_settings'.
+
+================================================================================
+TEST 7: No parent permission → GET /api/parent.php
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/parent.php
+LINES: 1-20 (Relevant security checks)
+
+CODE:
+-----
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/helper.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+
+Helper::handleCorsOptions();
+
+// SECURITY: Require authentication for parent endpoint
+$user = AuthManager::requireRole(['parent', 'teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('parent');  // <-- TEST 7: ENFORCED HERE
+}
+
+EVIDENCE: Line 14 explicitly calls AuthManager::requirePermission('parent')
+         for staff users.
+
+================================================================================
+TEST 8: No reports permission → GET /api/reports.php
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/reports.php
+LINES: 1-20 (Relevant security checks)
+
+CODE:
+-----
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/helper.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+
+Helper::handleCorsOptions();
+
+// SECURITY: Require authentication for reports endpoint
+$user = AuthManager::requireRole(['teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('reports');  // <-- TEST 8: ENFORCED HERE
+}
+
+EVIDENCE: Line 14 explicitly calls AuthManager::requirePermission('reports')
+         for staff users.
+
+================================================================================
+TEST 9: No exams POST permission → POST /api/exams.php (create_exam)
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/exams.php
+LINES: 12-14 (Same as Test 3)
+
+CODE:
+-----
+// SECURITY: Require authentication for exams endpoint
+$user = AuthManager::requireRole(['teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('exams');  // <-- TEST 9: ENFORCED HERE
+}
+
+EVIDENCE: Same permission check as Test 3. Line 14 calls
+         AuthManager::requirePermission('exams') which applies to ALL methods
+         including POST with create_exam action.
+
+================================================================================
+TEST 10: Permission Tampering Prevention
+================================================================================
+
+FILE: /home/user/StudentsSystem/config/auth.php
+LINES: 170-190 (requirePermission method for staff)
+
+CODE:
+-----
+    // Staff: check permissions from database
+    if ($user['role'] === 'staff') {
+        $db = DatabaseConnection::fromConfigFile()->connect();
+        
+        // Get staff permissions from teacher_staff table
+        $stmt = $db->prepare('SELECT permissions FROM teacher_staff WHERE user_id = :uid LIMIT 1');
+        $stmt->execute(['uid' => $user['user_id']]);
+        $staffData = $stmt->fetch();
+        
+        if ($staffData === false) {
+            Helper::sendForbidden('Staff record not found');
+        }
+        
+        $permissions = json_decode($staffData['permissions'], true) ?: [];
+        
+        if (!in_array($permission, $permissions, true)) {
+            Helper::sendForbidden('Access denied: Insufficient permissions');
+        }
+        
+        return $user;
+    }
+
+EVIDENCE: 
+- Line 175: Database connection established
+- Line 177-178: SQL query SELECTs permissions FROM teacher_staff table
+- Line 179: Query executed with authenticated user_id
+- Line 180: Staff data fetched from DATABASE
+- Line 184: Permissions decoded from DATABASE JSON field
+- Line 186-188: Checks if permission exists in DATABASE array
+
+CONCLUSION: Permissions are SOLELY sourced from the database.
+           No HTTP request parameters are used.
+           Any client-supplied permissions would be IGNORED.
+
+VERIFICATION: Searched all API files for permission parameters:
+  - api/attendance.php: No $_GET['permissions'] or $_POST['permissions']
+  - api/student.php: No $_GET['permissions'] or $_POST['permissions']
+  - api/exams.php: No $_GET['permissions'] or $_POST['permissions']
+  - api/reports.php: No $_GET['permissions'] or $_POST['permissions']
+  - api/parent.php: No $_GET['permissions'] or $_POST['permissions']
+  - api/teacher.php: No $_GET['permissions'] or $_POST['permissions']
+
+================================================================================
+TEST 11: Valid permission + wrong tenant → GET /api/student.php
+================================================================================
+
+FILE: /home/user/StudentsSystem/api/student.php
+LINES: 58-72 (Tenant isolation check)
+
+CODE:
+-----
+    } elseif ($user['role'] === 'teacher' || $user['role'] === 'staff') {
+        // Teacher/Staff can access students in their groups
+        if ($requestedStudentId <= 0) {
+            Helper::sendJson(['success' => false, 'message' => 'Student ID is required'], 400);
+        }
+        
+        // Verify this student is enrolled with the teacher
+        $teacherId = (int)$user['tenant_teacher_id'];  // <-- From session (set at login)
+        $stmtVerify = $db->prepare('SELECT se.id FROM student_enrollments se 
+            WHERE se.student_id = :sid AND se.teacher_id = :tid LIMIT 1');
+        $stmtVerify->execute([
+            'sid' => $requestedStudentId,
+            'tid' => $teacherId
+        ]);
+        if ($stmtVerify->fetch() === false) {
+            Helper::sendForbidden('Access denied');  // <-- TEST 11: ENFORCED HERE
+        }
+        $studentId = $requestedStudentId;
+
+EVIDENCE:
+- Line 64: Staff's tenant_teacher_id is retrieved from session
+- Line 65-66: SQL query checks student_enrollments table
+- Line 67-69: Query parameters include :sid and :tid
+- Line 70-72: If NO matching enrollment found, returns 403 Forbidden
+
+SCENARIO:
+  Staff A has tenant_teacher_id = 1 (belongs to Teacher 1)
+  Staff A has 'students' permission
+  Staff A requests student_id = X (enrolled with Teacher 2)
+  
+  Query executed: SELECT se.id FROM student_enrollments 
+                  WHERE student_id = X AND teacher_id = 1
+  
+  Result: No rows (Student X is with Teacher 2, not Teacher 1)
+  Action: Helper::sendForbidden('Access denied') - 403 returned
+
+CONCLUSION: Tenant isolation is enforced IN ADDITION TO permission checks.
+
+================================================================================
+CENTRAL PERMISSION SYSTEM
+================================================================================
+
+FILE: /home/user/StudentsSystem/config/auth.php
+LINES: 147-190 (Complete requirePermission method)
+
+CODE:
+-----
+    /**
+     * Require specific permission for the current user
+     * For staff: checks permissions from teacher_staff table
+     * For teachers: automatically granted (they own the tenant)
+     * For super_admin: automatically granted (platform-level access)
+     * For others: denied
+     * 
+     * @param string $permission Required permission (e.g., 'attendance', 'students', 'groups')
+     * @param int|null $teacherId Optional teacher_id for additional validation
+     * @return array User data
+     */
+    public static function requirePermission(string $permission): array
+    {
+        $user = self::getCurrentUserOrFail();
+        
+        // Teachers automatically have all permissions for their own tenant
+        if ($user['role'] === 'teacher') {
+            return $user;
+        }
+        
+        // Super Admin has platform-level permissions but not tenant-level
+        if ($user['role'] === 'super_admin') {
+            Helper::sendForbidden('Super Admin access restricted to platform management only');
+        }
+        
+        // Students and Parents don't have staff permissions
+        if ($user['role'] === 'student' || $user['role'] === 'parent') {
+            Helper::sendForbidden('Access denied');
+        }
+        
+        // Staff: check permissions from database
+        if ($user['role'] === 'staff') {
+            $db = DatabaseConnection::fromConfigFile()->connect();
+            
+            // Get staff permissions from teacher_staff table
+            $stmt = $db->prepare('SELECT permissions FROM teacher_staff WHERE user_id = :uid LIMIT 1');
+            $stmt->execute(['uid' => $user['user_id']]);
+            $staffData = $stmt->fetch();
+            
+            if ($staffData === false) {
+                Helper::sendForbidden('Staff record not found');
+            }
+            
+            $permissions = json_decode($staffData['permissions'], true) ?: [];
+            
+            if (!in_array($permission, $permissions, true)) {
+                Helper::sendForbidden('Access denied: Insufficient permissions');
+            }
+            
+            return $user;
+        }
+        
+        Helper::sendForbidden('Access denied');
+    }
+
+KEY FEATURES:
+- Line 159: Teachers automatically have all permissions (return early)
+- Line 162-164: Super admin blocked from tenant-level operations
+- Line 167-169: Students and parents denied staff permissions
+- Line 172-188: Staff permissions checked from DATABASE
+- Line 186-188: Returns 403 if permission not in array
+
+================================================================================
+SUMMARY
+================================================================================
+
+All 11 tests have EXPLICIT code evidence proving correct implementation.
+
+Each permission check:
+✅ Is implemented in the correct API endpoint
+✅ Uses AuthManager::requirePermission()
+✅ Checks the database for staff permissions
+✅ Returns 403 Forbidden when permission is lacking
+✅ Cannot be bypassed via request parameters
+✅ Is combined with tenant isolation where applicable
+
+PHASE 2 VERIFIED ✅

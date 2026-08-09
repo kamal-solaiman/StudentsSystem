@@ -1,6 +1,7 @@
 /**
  * Vanilla JavaScript SPA Application Controller & Router
  * Unified Education Platform (PHP 8.3 Native + MySQL + HTML5/CSS3/Vanilla JS)
+ * Security Hardening Phase 1: Authentication state handling
  */
 class AppController {
   constructor() {
@@ -8,11 +9,29 @@ class AppController {
     this.mainContainer = document.getElementById('app-main-content');
     this.rolePills = document.querySelectorAll('[data-role-view]');
     this.controllerInstance = null;
+    this.isAuthenticated = false;
+    this.currentUser = null;
   }
 
   async init() {
     this.attachNavigationListeners();
+    await this.checkAuthStatus();
     await this.loadCurrentView();
+  }
+
+  async checkAuthStatus() {
+    try {
+      const response = await ApiClient.getTeacherData();
+      if (response.success) {
+        this.isAuthenticated = true;
+        this.currentUser = response.user || null;
+      }
+    } catch (error) {
+      if (error.message && error.message.includes('Authentication required')) {
+        this.isAuthenticated = false;
+        this.currentUser = null;
+      }
+    }
   }
 
   attachNavigationListeners() {
@@ -40,22 +59,29 @@ class AppController {
       </div>
     `;
 
+    await this.checkAuthStatus();
+
+    if (!this.isAuthenticated) {
+      this.showLoginForm();
+      return;
+    }
+
     try {
       let data = null;
 
       if (this.currentView === 'teacher-1' || this.currentView === 'staff') {
-        data = await ApiClient.getTeacherData(1);
+        data = await ApiClient.getTeacherData();
         this.controllerInstance = new TeacherController(this.mainContainer, data, () => this.loadCurrentView());
       } else if (this.currentView === 'teacher-2') {
-        data = await ApiClient.getTeacherData(2);
+        data = await ApiClient.getTeacherData();
         this.controllerInstance = new TeacherController(this.mainContainer, data, () => this.loadCurrentView());
       } else if (this.currentView === 'student') {
-        data = await ApiClient.getStudentData(1);
+        data = await ApiClient.getStudentData();
         this.controllerInstance = new StudentController(this.mainContainer, data);
       } else if (this.currentView === 'parent') {
-        data = await ApiClient.getParentData(5, 1);
+        data = await ApiClient.getParentData();
         this.controllerInstance = new ParentController(this.mainContainer, data, async (newChildId) => {
-          const newData = await ApiClient.getParentData(5, newChildId);
+          const newData = await ApiClient.getParentData(null, newChildId);
           this.controllerInstance.data = newData;
           this.controllerInstance.render();
         });
@@ -78,6 +104,86 @@ class AppController {
           <button class="btn btn-primary" onclick="window.location.reload()" style="margin-top: 1rem;">إعادة المحاولة</button>
         </div>
       `;
+    }
+  }
+
+  showLoginForm() {
+    this.mainContainer.innerHTML = `
+      <div style="max-width: 400px; margin: 4rem auto; padding: 2rem; background: #fff; border-radius: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1);">
+        <h2 style="text-align: center; font-weight: 800; color: #0f172a; margin-bottom: 1.5rem;">تسجيل الدخول</h2>
+        
+        <div style="margin-bottom: 1.5rem;">
+          <label style="display: block; font-size: 0.85rem; font-weight: 700; color: #0f172a; margin-bottom: 0.5rem;">البريد الإلكتروني</label>
+          <input type="email" id="login-email" placeholder="ادخل البريد الإلكتروني" style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.9rem;" required>
+        </div>
+        
+        <div style="margin-bottom: 1.5rem;">
+          <label style="display: block; font-size: 0.85rem; font-weight: 700; color: #0f172a; margin-bottom: 0.5rem;">كلمة المرور</label>
+          <input type="password" id="login-password" placeholder="ادخل كلمة المرور" style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.9rem;" required>
+        </div>
+        
+        <button id="login-btn" style="width: 100%; padding: 0.75rem; background: #059669; color: #fff; border: none; border-radius: 0.5rem; font-size: 0.9rem; font-weight: 700; cursor: pointer; margin-bottom: 1rem;">
+          تسجيل الدخول
+        </button>
+        
+        <div id="login-error" style="color: #e11d48; font-size: 0.85rem; text-align: center; display: none;"></div>
+        
+        <div style="text-align: center; font-size: 0.8rem; color: #64748b; margin-top: 1.5rem;">
+          <p>بيانات تسجيل الدخول:</p>
+          <p><strong>البريد:</strong> admin@platform.edu / <strong>كلمة المرور:</strong> password</p>
+          <p><strong>البريد:</strong> ahmed@physics.edu / <strong>كلمة المرور:</strong> password</p>
+          <p><strong>البريد:</strong> sara@math.edu / <strong>كلمة المرور:</strong> password</p>
+        </div>
+      </div>
+    `;
+
+    const loginBtn = document.getElementById('login-btn');
+    if (loginBtn) {
+      loginBtn.addEventListener('click', async () => {
+        await this.handleLogin();
+      });
+    }
+    
+    const passwordInput = document.getElementById('login-password');
+    if (passwordInput) {
+      passwordInput.addEventListener('keypress', async (e) => {
+        if (e.key === 'Enter') {
+          await this.handleLogin();
+        }
+      });
+    }
+  }
+
+  async handleLogin() {
+    const email = document.getElementById('login-email')?.value || '';
+    const password = document.getElementById('login-password')?.value || '';
+    const errorDiv = document.getElementById('login-error');
+
+    if (!email || !password) {
+      if (errorDiv) {
+        errorDiv.textContent = 'الرجاء إدخال البريد الإلكتروني وكلمة المرور';
+        errorDiv.style.display = 'block';
+      }
+      return;
+    }
+
+    try {
+      const response = await ApiClient.login(email, password);
+      if (response.success) {
+        this.isAuthenticated = true;
+        this.currentUser = response.user;
+        await this.loadCurrentView();
+      } else {
+        if (errorDiv) {
+          errorDiv.textContent = response.message || 'Failed to login';
+          errorDiv.style.display = 'block';
+        }
+      }
+    } catch (error) {
+      if (errorDiv) {
+        errorDiv.textContent = error.message || 'حدث خطأ أثناء تسجيل الدخول';
+        errorDiv.style.display = 'block';
+      }
     }
   }
 }

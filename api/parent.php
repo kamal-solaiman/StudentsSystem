@@ -7,18 +7,81 @@ require_once __DIR__ . '/../config/auth.php';
 
 Helper::handleCorsOptions();
 
+// SECURITY: Require authentication for parent endpoint
+$user = AuthManager::requireRole(['parent', 'teacher', 'staff', 'super_admin']);
+
+// SECURITY: For staff, check specific permission
+if ($user['role'] === 'staff') {
+    AuthManager::requirePermission('parent');
+}
+
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
-    $parentUserId = isset($_GET['parent_id']) ? (int)$_GET['parent_id'] : 5;
-    $studentIdParam = isset($_GET['student_id']) ? (int)$_GET['student_id'] : 0;
-
-    $stmtParent = $db->prepare('SELECT * FROM users WHERE id = :uid LIMIT 1');
-    $stmtParent->execute(['uid' => $parentUserId]);
-    $parent = $stmtParent->fetch();
-
-    if ($parent === false) {
-        Helper::sendJson(['success' => false, 'error' => 'لم يتم العثور على حساب ولي الأمر'], 404);
+    
+    // SECURITY: For parent role, use authenticated user's ID
+    // For other roles, validate access
+    $parent = null;
+    $parentUserId = null;
+    
+    if ($user['role'] === 'parent') {
+        $parentUserId = $user['user_id'];
+        $stmtParent = $db->prepare('SELECT * FROM users WHERE id = :uid LIMIT 1');
+        $stmtParent->execute(['uid' => $parentUserId]);
+        $parent = $stmtParent->fetch();
+        
+        if ($parent === false || $parent['role'] !== 'parent') {
+            Helper::sendForbidden('Parent not found or invalid role');
+        }
+        
+    } elseif ($user['role'] === 'teacher' || $user['role'] === 'staff') {
+        // SECURITY FIX: Teacher/staff can only access parents related to their students
+        $parentUserId = isset($_GET['parent_id']) ? (int)$_GET['parent_id'] : 0;
+        if ($parentUserId <= 0) {
+            Helper::sendJson(['success' => false, 'message' => 'Parent ID is required'], 400);
+        }
+        
+        // Verify the parent exists and has parent role
+        $stmtParentCheck = $db->prepare('SELECT * FROM users WHERE id = :uid AND role = "parent" LIMIT 1');
+        $stmtParentCheck->execute(['uid' => $parentUserId]);
+        $parent = $stmtParentCheck->fetch();
+        
+        if ($parent === false) {
+            Helper::sendJson(['success' => false, 'message' => 'Parent not found'], 404);
+        }
+        
+        // Verify this parent has at least one child enrolled with the teacher
+        $teacherId = (int)$user['tenant_teacher_id'];
+        if ($teacherId <= 0) {
+            Helper::sendForbidden('Invalid teacher context');
+        }
+        
+        $stmtVerify = $db->prepare('
+            SELECT COUNT(*) as c
+            FROM students s
+            JOIN student_enrollments se ON s.id = se.student_id
+            WHERE (s.parent_user_id = :puid OR s.parent_phone = :pphone)
+            AND se.teacher_id = :tid
+            LIMIT 1
+        ');
+        $stmtVerify->execute([
+            'puid' => $parentUserId,
+            'pphone' => $parent['phone'],
+            'tid' => $teacherId
+        ]);
+        
+        if ((int)$stmtVerify->fetch()['c'] === 0) {
+            Helper::sendForbidden('Access denied: Parent has no children enrolled with this teacher');
+        }
+        
+    } elseif ($user['role'] === 'super_admin') {
+        // SECURITY FIX: Super Admin should NOT access individual parent data per business rules
+        Helper::sendForbidden('Super Admin cannot access individual parent data. Use super_admin.php for platform management.');
+    } else {
+        Helper::sendForbidden('Access denied');
     }
+    
+    // Get student_id parameter from request
+    $studentIdParam = isset($_GET['student_id']) ? (int)$_GET['student_id'] : 0;
 
     // Children belonging to this parent
     $stmtChildren = $db->prepare('
@@ -33,9 +96,27 @@ try {
     $children = $stmtChildren->fetchAll();
 
     if (empty($children)) {
-        // If no child matched by ID, fallback to student 1 and 2 demo
-        $stmtChildren = $db->query('SELECT * FROM students LIMIT 2');
-        $children = $stmtChildren->fetchAll();
+        // For parent role, if no children found, return empty
+        Helper::sendJson([
+            'success' => true,
+            'parent' => [
+                'id' => (int)$parent['id'],
+                'name' => (string)$parent['name'],
+                'email' => (string)$parent['email'],
+                'phone' => (string)$parent['phone']
+            ],
+            'children' => [],
+            'selected_child' => null,
+            'teachers' => [],
+            'attendance_report' => [
+                'records' => [],
+                'total_present' => 0,
+                'total_absent' => 0,
+                'total_late' => 0
+            ],
+            'homeworks' => [],
+            'exams' => []
+        ]);
     }
 
     $selectedChild = null;
@@ -46,11 +127,39 @@ try {
                 break;
             }
         }
+        // SECURITY: If requested student_id doesn't belong to this parent, deny access
+        if ($selectedChild === null && $user['role'] === 'parent') {
+            Helper::sendForbidden('Access denied');
+        }
     }
     if ($selectedChild === null) {
-        $selectedChild = $children[0] ?? [];
+        $selectedChild = $children[0] ?? null;
     }
-    $selectedChildId = (int)($selectedChild['id'] ?? 1);
+    
+    if ($selectedChild === null) {
+        Helper::sendJson([
+            'success' => true,
+            'parent' => [
+                'id' => (int)$parent['id'],
+                'name' => (string)$parent['name'],
+                'email' => (string)$parent['email'],
+                'phone' => (string)$parent['phone']
+            ],
+            'children' => $children,
+            'selected_child' => null,
+            'teachers' => [],
+            'attendance_report' => [
+                'records' => [],
+                'total_present' => 0,
+                'total_absent' => 0,
+                'total_late' => 0
+            ],
+            'homeworks' => [],
+            'exams' => []
+        ]);
+    }
+    
+    $selectedChildId = (int)$selectedChild['id'];
 
     // Attendance monthly report for child
     $stmtAtt = $db->prepare('

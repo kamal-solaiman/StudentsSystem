@@ -7,6 +7,21 @@ require_once __DIR__ . '/../config/auth.php';
 
 Helper::handleCorsOptions();
 
+// SECURITY: Require super_admin role for all super_admin endpoints
+$user = AuthManager::requireRole(['super_admin']);
+
+// SECURITY: Verify CSRF token for state-changing methods
+if (in_array($_SERVER['REQUEST_METHOD'], ['POST'], true)) {
+    $input = Helper::getJsonInput();
+    $csrfToken = $input['csrf_token'] ?? null;
+    if ($csrfToken === null || $csrfToken === '') {
+        $csrfToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+    }
+    if (!AuthManager::validateCsrfToken($csrfToken)) {
+        Helper::sendForbidden('Invalid CSRF token');
+    }
+}
+
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
     $method = $_SERVER['REQUEST_METHOD'];
