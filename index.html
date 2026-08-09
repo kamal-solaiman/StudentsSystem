@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>منصة إدارة تعليم موحدة (Unified Education Platform) | PHP 8.3 Native + MySQL</title>
+  
+  <!-- Vanilla CSS3 Stylesheets (No Tailwind, No External Libraries) -->
+  <link rel="stylesheet" href="assets/css/reset.css" />
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <link rel="stylesheet" href="assets/css/qr.css" />
+  
+  <style>
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="navbar">
+    <div class="navbar-banner">
+      منصة تعليمية Multi-Tenant SaaS موحدة — PHP 8.3 Native + MySQL + HTML5/CSS3/Vanilla JS متوافقة تماماً مع سيرفرات cPanel المشتركة
+    </div>
+    
+    <div class="navbar-content">
+      <div class="brand">
+        <div class="brand-icon">م</div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <h1 class="brand-title">منصة إدارة تعليم موحدة</h1>
+            <span class="badge badge-emerald" style="background: #059669; color: #fff;">SaaS</span>
+          </div>
+          <p class="brand-sub">عزل كامل لبيانات المدرسين (Multi-Tenant) • حسابات طلاب وأولياء أمور موحدة</p>
+        </div>
+      </div>
+      
+      <!-- Role Switcher Pills -->
+      <div class="role-pills">
+        <button class="role-pill active" data-role-view="teacher-1">أ. أحمد محمود (فيزياء)</button>
+        <button class="role-pill" data-role-view="teacher-2">أ. سارة عادل (رياضيات)</button>
+        <button class="role-pill student-pill" data-role-view="student">الطالب: يوسف محمد</button>
+        <button class="role-pill" data-role-view="parent">ولي الأمر: م. محمد سعيد</button>
+        <button class="role-pill" data-role-view="staff">المساعد / السكرتارية</button>
+        <button class="role-pill admin-pill" data-role-view="super_admin">الإدارة العامة (Super Admin)</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Application Area -->
+  <main class="container" id="app-main-content">
+    <!-- Rendered dynamically by Vanilla JS SPA Router (app.js) -->
+  </main>
+
+  <!-- Footer -->
+  <footer style="text-align: center; padding: 2rem 1rem; border-top: 1px solid #e2e8f0; margin-top: 4rem; color: #64748b; font-size: 0.75rem;">
+    <div>منصة إدارة تعليم موحدة (Unified Education Platform) | متوافقة 100% مع Apache / cPanel Shared Hosting</div>
+    <div style="margin-top: 0.35rem;">Backend: PHP 8.3 Native فقط • Frontend: HTML5 + CSS3 + JavaScript Vanilla فقط • Database: MySQL فقط</div>
+  </footer>
+
+  <!-- Pure Vanilla JavaScript Scripts (No React, No Next, No jQuery) -->
+  <script src="assets/js/api.js"></script>
+  <script src="assets/js/qr-generator.js"></script>
+  <script src="assets/js/teacher.js"></script>
+  <script src="assets/js/student.js"></script>
+  <script src="assets/js/parent.js"></script>
+  <script src="assets/js/admin.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>

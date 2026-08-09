@@ -1,0 +1,40 @@
+# ==============================================================================
+# Apache / cPanel Shared Hosting Configuration
+# Unified Education Platform (PHP 8.3 Native + MySQL + Vanilla JS/HTML5/CSS3)
+# ==============================================================================
+
+# Enable UTF-8 encoding for Arabic text
+AddDefaultCharset UTF-8
+
+# Prevent directory browsing
+Options -Indexes
+
+# Enable rewrite engine
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+    
+    # Protect config and database SQL files from direct public access
+    RewriteRule ^(config|database)/.*$ - [F,L]
+    
+    # Route all API requests through their PHP handler
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^api/([a-zA-Z0-9_-]+)$ api/$1.php [L,QSA]
+</IfModule>
+
+# Set security and CORS headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Set PHP 8.3 default runtime configuration if PHP-FPM is present
+<IfModule mod_php.c>
+    php_value default_charset "UTF-8"
+    php_value mbstring.internal_encoding "UTF-8"
+    php_value post_max_size 20M
+    php_value upload_max_filesize 20M
+</IfModule>
