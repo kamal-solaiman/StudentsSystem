@@ -299,6 +299,14 @@ final class AuthManager
     }
 
     /**
+     * Get the rate limit window in seconds
+     */
+    public static function getRateLimitWindow(): int
+    {
+        return self::RATE_LIMIT_WINDOW;
+    }
+
+    /**
      * Check rate limit for login attempts
      */
     public static function checkRateLimit(string $identifier): bool
