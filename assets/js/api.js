@@ -1,5 +1,5 @@
 /**
- * Vanilla JavaScript API Wrapper (PHP 8.3 Native Backend communication)
+ * JavaScript API Wrapper
  * Security Hardening Phase 1: CSRF Token support
  */
 class ApiClient {

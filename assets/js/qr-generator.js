@@ -1,6 +1,6 @@
 /**
- * Pure Vanilla JavaScript SVG QR Generator
- * No external libraries (No jQuery, No React, No QRCode.js)
+ * SVG QR Generator
+ * No external libraries
  */
 class QrSvgGenerator {
   static renderSvg(studentCode, size = 180) {

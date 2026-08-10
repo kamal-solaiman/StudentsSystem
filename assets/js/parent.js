@@ -1,5 +1,5 @@
 /**
- * Vanilla JavaScript Controller for the 5 Mandatory Parent Portal Pages
+ * JavaScript Controller for the 5 Mandatory Parent Portal Pages
  * Includes multiple children switcher
  */
 class ParentController {
@@ -26,7 +26,7 @@ class ParentController {
             </div>
             <div>
               <span class="badge badge-emerald">لوحة ولي الأمر (Parent Portal)</span>
-              <h2 style="font-size: 1.75rem; font-weight: 800; margin-top: 0.35rem;">${parent.name || 'م. محمد سعيد علي'}</h2>
+              <h2 style="font-size: 1.75rem; font-weight: 800; margin-top: 0.35rem;">${parent.name || ''}</h2>
               <p style="font-size: 0.8rem; color: #e9d5ff; margin-top: 0.2rem;">متابعة الحضور، الواجبات، الدرجات، والمدفوعات لجميع الأبناء بسهولة</p>
             </div>
           </div>
@@ -48,8 +48,8 @@ class ParentController {
 
         <!-- Selected Child Summary -->
         <div style="background: rgba(255, 255, 255, 0.1); border-radius: 0.75rem; padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-          <span style="font-weight: 800; color: #fff;">الطالب النشط: ${selectedChild.name || 'يوسف محمد سعيد'} (${selectedChild.grade_level || 'ثالثة ثانوي'})</span>
-          <span style="font-family: monospace; color: #a7f3d0; font-weight: 700;">CODE: ${selectedChild.student_code || 'STU-10045'}</span>
+          <span style="font-weight: 800; color: #fff;">الطالب النشط: ${selectedChild.name || ''} (${selectedChild.grade_level || ''})</span>
+          <span style="font-family: monospace; color: #a7f3d0; font-weight: 700;">CODE: ${selectedChild.student_code || ''}</span>
         </div>
 
         <!-- 5 Mandatory Parent Pages Tabs -->
@@ -85,7 +85,7 @@ class ParentController {
       <div class="grid-4">
         <div class="stat-card">
           <span class="stat-card-title">أيام الحضور شهرياً</span>
-          <div class="stat-card-value" style="color: #059669;">${att.total_present || 1} يوم</div>
+          <div class="stat-card-value" style="color: #059669;">${att.total_present || 0} يوم</div>
           <div class="stat-card-desc">حضور منتظم</div>
         </div>
         <div class="stat-card">
@@ -95,12 +95,12 @@ class ParentController {
         </div>
         <div class="stat-card">
           <span class="stat-card-title">متوسط درجات الامتحانات</span>
-          <div class="stat-card-value">92%</div>
-          <div class="stat-card-desc">أداء ممتاز في الفيزياء والرياضيات</div>
+          <div class="stat-card-value">—</div>
+          <div class="stat-card-desc">لا توجد درجات مسجلة</div>
         </div>
         <div class="stat-card">
           <span class="stat-card-title">المدرسون المشترك معهم</span>
-          <div class="stat-card-value">${(this.data.teachers || []).length || 2} مدرسين</div>
+          <div class="stat-card-value">${(this.data.teachers || []).length} مدرسين</div>
           <div class="stat-card-desc">جميع الاشتراكات مدفوعة ونشطة</div>
         </div>
       </div>
@@ -115,7 +115,7 @@ class ParentController {
           <td style="padding: 1rem; font-weight: 800;">${h.title}</td>
           <td style="padding: 1rem;">${h.teacher_name}</td>
           <td style="padding: 1rem;">${h.due_date}</td>
-          <td style="padding: 1rem; font-weight: 800; color: #059669;">${h.grade || 19.5} / ${h.max_grade || 20}</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${h.grade || 0} / ${h.max_grade || 0}</td>
         </tr>
       `;
     });
@@ -155,7 +155,7 @@ class ParentController {
             </span>
           </td>
           <td style="padding: 1rem; font-family: monospace;">${r.arrival_time || '—'}</td>
-          <td style="padding: 1rem; font-family: monospace;">${r.departure_time || '07:00 مساءً'}</td>
+          <td style="padding: 1rem; font-family: monospace;">${r.departure_time || '—'}</td>
           <td style="padding: 1rem; color: #d97706; font-weight: 800;">${r.late_minutes || 0} دقيقة</td>
         </tr>
       `;
@@ -195,7 +195,7 @@ class ParentController {
           <td style="padding: 1rem; font-weight: 800;">${e.title}</td>
           <td style="padding: 1rem;">${e.teacher_name}</td>
           <td style="padding: 1rem;">${e.date} (${e.time})</td>
-          <td style="padding: 1rem; font-weight: 800; color: #059669;">${e.score || 11} / ${e.max_score || 12}</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${e.score || 0} / ${e.max_score || 0}</td>
         </tr>
       `;
     });

@@ -1,5 +1,5 @@
 /**
- * Vanilla JavaScript Controller for the 9 Mandatory Teacher Dashboard Pages
+ * JavaScript Controller for the 9 Mandatory Teacher Dashboard Pages
  */
 class TeacherController {
   constructor(containerElement, data, onRefreshCallback) {
@@ -24,7 +24,7 @@ class TeacherController {
               ${teacher.name ? teacher.name.charAt(2) : 'م'}
             </div>
             <div>
-              <span class="badge badge-emerald">لوحة تحكم المدرس — مساحة معزولة (Multi-Tenant)</span>
+              <span class="badge badge-emerald">لوحة تحكم المدرس</span>
               <h2 style="font-size: 1.75rem; font-weight: 800; margin-top: 0.35rem;">${teacher.name} — ${teacher.subject}</h2>
               <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.2rem;">${teacher.center_name} • ${teacher.address}</p>
             </div>
