@@ -184,4 +184,5 @@ final class Helper
     {
         return number_format($number, 2, '.', ',');
     }
+}
 
