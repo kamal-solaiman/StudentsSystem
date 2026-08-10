@@ -19,6 +19,7 @@ class AppController {
     this.isAuthenticated = false;
     this.currentUser = null;
     this._cachedRole = null;
+    this.isLoggingOut = false;
 
     this.landing = new LandingController();
     this.router = new AppRouter();
@@ -26,6 +27,7 @@ class AppController {
 
   async init() {
     this.attachNavigationListeners();
+    this.attachLogoutListener();
     this.setLandingYear();
     this.setupRouter();
     await this.router.init();
@@ -79,6 +81,7 @@ class AppController {
     // Public Routes
     this.router.addRoute('/', async () => {
       this.controllerInstance = null;
+      this.setLogoutButtonVisibility(false);
       if (this.landing) {
         this.landing.show();
       }
@@ -87,6 +90,7 @@ class AppController {
 
     this.router.addRoute('/login', async () => {
       this.controllerInstance = null;
+      this.setLogoutButtonVisibility(false);
       this.showLoginForm();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }, { public: true });
@@ -257,6 +261,55 @@ class AppController {
     });
   }
 
+  setLogoutButtonVisibility(visible) {
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) {
+      logoutBtn.hidden = !visible;
+    }
+  }
+
+  attachLogoutListener() {
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', async () => {
+        await this.handleLogout(logoutBtn);
+      });
+    }
+  }
+
+  async handleLogout(logoutBtn) {
+    if (this.isLoggingOut) return;
+
+    this.isLoggingOut = true;
+    logoutBtn.disabled = true;
+    logoutBtn.setAttribute('aria-busy', 'true');
+
+    const label = logoutBtn.querySelector('[data-logout-label]');
+    if (label) {
+      label.textContent = 'جارٍ تسجيل الخروج...';
+    }
+
+    try {
+      const response = await ApiClient.logout();
+      if (!response || response.success !== true) {
+        throw new Error(response && response.message ? response.message : 'فشل تسجيل الخروج');
+      }
+
+      // Only clear the browser state after the server confirms session destruction.
+      await this.logoutAndReturnToLanding();
+    } catch (error) {
+      console.error('Logout error:', error);
+      alert('تعذر تسجيل الخروج: ' + (error.message || 'يرجى المحاولة مرة أخرى'));
+      logoutBtn.disabled = false;
+      logoutBtn.removeAttribute('aria-busy');
+      if (label) {
+        label.textContent = 'تسجيل الخروج';
+      }
+    } finally {
+      this.isLoggingOut = false;
+    }
+  }
+
   showLoadingSpinner() {
     if (!this.mainContainer) return;
     this.mainContainer.innerHTML = `
@@ -284,6 +337,7 @@ class AppController {
    */
   async loadSuperAdminDashboard() {
     if (this.landing) this.landing.hide();
+    this.setLogoutButtonVisibility(true);
     this.showLoadingSpinner();
     try {
       const data = await ApiClient.getSuperAdminData();
@@ -302,6 +356,7 @@ class AppController {
    */
   async loadTeacherDashboard(tab = 'overview') {
     if (this.landing) this.landing.hide();
+    this.setLogoutButtonVisibility(true);
 
     const validTabs = ['overview', 'classes', 'groups', 'students', 'attendance', 'exams', 'reports', 'staff', 'settings'];
     const activeTab = validTabs.includes(tab) ? tab : 'overview';
@@ -332,6 +387,7 @@ class AppController {
    */
   async loadStudentDashboard(tab = 'overview') {
     if (this.landing) this.landing.hide();
+    this.setLogoutButtonVisibility(true);
 
     const validTabs = ['overview', 'schedule', 'homeworks', 'exams', 'lessons', 'subscriptions', 'settings'];
     const activeTab = validTabs.includes(tab) ? tab : 'overview';
@@ -361,6 +417,7 @@ class AppController {
    */
   async loadParentDashboard(tab = 'overview') {
     if (this.landing) this.landing.hide();
+    this.setLogoutButtonVisibility(true);
 
     const validTabs = ['overview', 'homeworks', 'attendance', 'exams', 'teachers'];
     const activeTab = validTabs.includes(tab) ? tab : 'overview';
@@ -405,6 +462,7 @@ class AppController {
     if (this.landing) {
       this.landing.hide();
     }
+    this.setLogoutButtonVisibility(false);
     if (this.mainContainer) {
       this.mainContainer.classList.remove('is-hidden-by-landing');
     }
@@ -506,14 +564,20 @@ class AppController {
   }
 
   /**
-   * Reset the local session state and return the visitor to the public landing page.
+   * Reset browser authentication state after the logout endpoint has destroyed the PHP session.
    */
-  logoutAndReturnToLanding() {
+  async logoutAndReturnToLanding() {
     this._clearCachedRole();
     this.isAuthenticated = false;
     this.currentUser = null;
     this.controllerInstance = null;
     this.currentView = 'teacher-1';
+    this.setLogoutButtonVisibility(false);
+
+    // The CSRF token is also cached in memory by ApiClient.
+    if (typeof ApiClient !== 'undefined') {
+      ApiClient.csrfToken = '';
+    }
 
     try {
       if (typeof sessionStorage !== 'undefined') {
@@ -524,14 +588,20 @@ class AppController {
       // ignore
     }
 
-    if (this.router) {
-      this.router.replace('/');
-    } else {
-      if (this.landing) {
-        this.landing.show();
-      }
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (this.mainContainer) {
+      this.mainContainer.innerHTML = '';
     }
+
+    if (this.router) {
+      // Discard the dashboard route before replacing the current history entry with the landing route.
+      this.router.currentRoute = null;
+      return await this.router.replace('/');
+    }
+
+    if (this.landing) {
+      this.landing.show();
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
