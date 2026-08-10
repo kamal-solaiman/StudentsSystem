@@ -24,7 +24,7 @@ if ($email === '' || $password === '') {
 // Check rate limit for login attempts
 if (!AuthManager::checkRateLimit($email)) {
     $remaining = AuthManager::getRateLimitRemaining($email);
-    $retryAfter = ceil(AuthManager::RATE_LIMIT_WINDOW / 60); // minutes
+    $retryAfter = ceil(AuthManager::getRateLimitWindow() / 60); // minutes
     Helper::sendJson([
         'success' => false,
         'message' => "Too many login attempts. Please try again in $retryAfter minutes."
