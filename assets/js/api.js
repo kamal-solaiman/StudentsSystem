@@ -101,6 +101,11 @@ class ApiClient {
     return response;
   }
 
+  static async logout() {
+    // request() sends the existing CSRF token in both the header and JSON body.
+    return this.request('logout.php', 'POST', {});
+  }
+
   static async getTeacherData(teacherId = null) {
     // For authenticated users, don't pass teacher_id - use session context
     const url = teacherId ? `teacher.php?teacher_id=${teacherId}` : 'teacher.php';
