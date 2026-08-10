@@ -106,12 +106,16 @@ class LandingController {
     loginBtns.forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
-        this.hide();
-        if (window.app && typeof window.app.showLoginForm === 'function') {
-          window.app.showLoginForm();
+        if (window.router) {
+          window.router.navigate('/login');
+        } else {
+          this.hide();
+          if (window.app && typeof window.app.showLoginForm === 'function') {
+            window.app.showLoginForm();
+          }
+          // Scroll to top to make sure the login form is in view
+          window.scrollTo({ top: 0, behavior: 'smooth' });
         }
-        // Scroll to top to make sure the login form is in view
-        window.scrollTo({ top: 0, behavior: 'smooth' });
       });
     });
 
@@ -119,11 +123,15 @@ class LandingController {
     // so we just route to login form for now and surface a "soon" notice.
     const registerBtns = document.querySelectorAll('[data-landing-action="register"]');
     registerBtns.forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         e.preventDefault();
-        this.hide();
-        if (window.app && typeof window.app.showLoginForm === 'function') {
-          window.app.showLoginForm();
+        if (window.router) {
+          await window.router.navigate('/login');
+        } else {
+          this.hide();
+          if (window.app && typeof window.app.showLoginForm === 'function') {
+            window.app.showLoginForm();
+          }
         }
         window.scrollTo({ top: 0, behavior: 'smooth' });
         // Surface a notice that registration UI is not yet available

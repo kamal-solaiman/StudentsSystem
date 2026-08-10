@@ -279,8 +279,13 @@ class StudentController {
   attachEventListeners() {
     this.container.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        this.activeTab = e.target.getAttribute('data-tab');
-        this.render();
+        const tab = e.target.getAttribute('data-tab');
+        if (window.router) {
+          window.router.navigate('/student/' + tab);
+        } else {
+          this.activeTab = tab;
+          this.render();
+        }
       });
     });
   }

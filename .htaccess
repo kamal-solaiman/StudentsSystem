@@ -12,7 +12,7 @@ Options -Indexes
 # Enable rewrite engine
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteBase /
+    RewriteBase /110/
     
     # Protect config and database SQL files from direct public access
     RewriteRule ^(config|database)/.*$ - [F,L]
@@ -21,6 +21,12 @@ Options -Indexes
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteRule ^api/([a-zA-Z0-9_-]+)$ api/$1.php [L,QSA]
+
+    # Route all other frontend SPA requests to index.html (Clean URLs & HTML5 History API)
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_URI} !^.*/api/
+    RewriteRule ^ index.html [L,QSA]
 </IfModule>
 
 # Set security and CORS headers

@@ -1,19 +1,15 @@
 /**
- * JavaScript SPA Application Controller & Router
- * Security Hardening Phase 1: Authentication state handling
+ * JavaScript SPA Application Controller & History API Router Integration
+ * Security Hardening Phase 1: Authentication state handling & RBAC
  *
- * Role-Aware Dashboard Routing:
- * The router is driven by the user's role (captured from the login response
- * and persisted in sessionStorage for refresh resilience), not by a hard-coded
- * view key. The Super Admin, teacher, staff, student, and parent branches each
- * resolve to the correct API endpoint and the correct controller.
+ * Client-Side URL Routing Architecture:
+ * - HTML5 History API (pushState, replaceState, popstate)
+ * - Base path: /110/ (cPanel production) or / (root environments)
+ * - Role-Aware Routing: backend response.user.role drives dashboard selection
+ * - Inner Dashboard Tabs: parameterized routes (/teacher/:tab, /student/:tab, /parent/:tab)
  */
 class AppController {
   constructor() {
-    // currentView is kept as an internal UI-state default for the teacher
-    // dashboard (it is only consulted AFTER the role has been resolved to
-    // 'teacher' or 'staff'). It is intentionally not used as a global default
-    // for routing anymore.
     this.currentView = 'teacher-1';
 
     this.mainContainer = document.getElementById('app-main-content');
@@ -22,19 +18,17 @@ class AppController {
 
     this.isAuthenticated = false;
     this.currentUser = null;
-
-    // Captured role — set on successful login and on a successful session
-    // probe. Used by loadCurrentView() to pick the right API + controller.
     this._cachedRole = null;
 
     this.landing = new LandingController();
+    this.router = new AppRouter();
   }
 
   async init() {
     this.attachNavigationListeners();
     this.setLandingYear();
-    await this.checkAuthStatus();
-    await this.bootstrapView();
+    this.setupRouter();
+    await this.router.init();
   }
 
   setLandingYear() {
@@ -45,14 +39,131 @@ class AppController {
   }
 
   /**
-   * Try to identify the currently-authenticated user.
-   *
-   * Two stages:
-   *   1. If we have a cached role from a previous login in this session,
-   *      probe the role-appropriate endpoint to confirm the session is
-   *      still valid. If it works, the user is authenticated.
-   *   2. If we have no cached role, no session is recognized, and the
-   *      user is treated as a public visitor.
+   * Configure all application routes, guards, and handlers
+   */
+  setupRouter() {
+    // Global Navigation Guard (Auth & Role Check)
+    this.router.beforeEach(async (to) => {
+      // Confirm auth status with session probe
+      await this.checkAuthStatus();
+
+      const isPublic = to.route.meta && to.route.meta.public === true;
+      const requiredRole = to.route.meta && to.route.meta.role;
+
+      // 1. Unauthenticated user trying to access protected route -> redirect to /login
+      if (!isPublic && !this.isAuthenticated) {
+        return '/login';
+      }
+
+      // 2. Authenticated user visiting /login -> redirect to their role dashboard
+      if (this.isAuthenticated && to.path === '/login') {
+        return this.getDashboardRouteForRole(this._resolveRole());
+      }
+
+      // 3. Role authorization check for protected dashboard routes
+      if (this.isAuthenticated && requiredRole) {
+        const userRole = this._resolveRole();
+        const isAllowed = Array.isArray(requiredRole)
+          ? requiredRole.includes(userRole)
+          : (requiredRole === userRole || (requiredRole === 'teacher' && userRole === 'staff') || (requiredRole === 'staff' && userRole === 'teacher'));
+
+        if (!isAllowed) {
+          console.warn(`Role mismatch: user role '${userRole}' cannot access route requiring '${requiredRole}'`);
+          return this.getDashboardRouteForRole(userRole);
+        }
+      }
+
+      return true; // proceed with navigation
+    });
+
+    // Public Routes
+    this.router.addRoute('/', async () => {
+      this.controllerInstance = null;
+      if (this.landing) {
+        this.landing.show();
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, { public: true });
+
+    this.router.addRoute('/login', async () => {
+      this.controllerInstance = null;
+      this.showLoginForm();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, { public: true });
+
+    // Super Admin Dashboard Route
+    this.router.addRoute('/super-admin', async () => {
+      await this.loadSuperAdminDashboard();
+    }, { role: 'super_admin' });
+
+    // Teacher Dashboard Routes (with inner tabs)
+    this.router.addRoute('/teacher', async () => {
+      await this.loadTeacherDashboard('overview');
+    }, { role: ['teacher', 'staff'] });
+
+    this.router.addRoute('/teacher/:tab', async (params) => {
+      await this.loadTeacherDashboard(params.tab || 'overview');
+    }, { role: ['teacher', 'staff'] });
+
+    // Staff Dashboard Routes (aliases to Teacher Dashboard with staff role permissions)
+    this.router.addRoute('/staff', async () => {
+      await this.loadTeacherDashboard('overview');
+    }, { role: ['staff', 'teacher'] });
+
+    this.router.addRoute('/staff/:tab', async (params) => {
+      await this.loadTeacherDashboard(params.tab || 'overview');
+    }, { role: ['staff', 'teacher'] });
+
+    // Student Dashboard Routes (with inner tabs)
+    this.router.addRoute('/student', async () => {
+      await this.loadStudentDashboard('overview');
+    }, { role: 'student' });
+
+    this.router.addRoute('/student/:tab', async (params) => {
+      await this.loadStudentDashboard(params.tab || 'overview');
+    }, { role: 'student' });
+
+    // Parent Dashboard Routes (with inner tabs)
+    this.router.addRoute('/parent', async () => {
+      await this.loadParentDashboard('overview');
+    }, { role: 'parent' });
+
+    this.router.addRoute('/parent/:tab', async (params) => {
+      await this.loadParentDashboard(params.tab || 'overview');
+    }, { role: 'parent' });
+
+    // Fallback handler for invalid / unknown routes
+    this.router.onNotFound(async (path) => {
+      console.warn('Route not found:', path);
+      if (this.isAuthenticated) {
+        await this.router.replace(this.getDashboardRouteForRole(this._resolveRole()));
+      } else {
+        await this.router.replace('/');
+      }
+    });
+  }
+
+  /**
+   * Determine default dashboard route for a given user role
+   */
+  getDashboardRouteForRole(role) {
+    switch (role) {
+      case 'super_admin':
+        return '/super-admin';
+      case 'teacher':
+      case 'staff':
+        return '/teacher';
+      case 'student':
+        return '/student';
+      case 'parent':
+        return '/parent';
+      default:
+        return '/';
+    }
+  }
+
+  /**
+   * Identify currently-authenticated user via cached role + session probe
    */
   async checkAuthStatus() {
     this._cachedRole = null;
@@ -78,15 +189,13 @@ class AppController {
       this.currentUser = probe.user || this.currentUser;
       this.isAuthenticated = true;
     } else {
-      // Cached role did not match a live session — clear it.
+      // Cached role did not match a live backend session — clear it
       this._clearCachedRole();
     }
   }
 
   /**
-   * Hit a single, role-appropriate GET endpoint to confirm the session
-   * is alive. Returns the JSON body on success, null on failure.
-   * Never throws — all errors are caught.
+   * Probe role-appropriate endpoint to verify active session
    */
   async _probeForRole(role) {
     try {
@@ -108,10 +217,6 @@ class AppController {
     }
   }
 
-  /**
-   * Persist the role for the current browser session so a page refresh
-   * can route the user to the right dashboard without a fresh login.
-   */
   _setCachedRole(role) {
     this._cachedRole = role;
     try {
@@ -119,7 +224,7 @@ class AppController {
         sessionStorage.setItem('user_role', role);
       }
     } catch (e) {
-      // sessionStorage unavailable — fall back to in-memory only
+      // ignore
     }
   }
 
@@ -132,6 +237,10 @@ class AppController {
     } catch (e) {
       // ignore
     }
+  }
+
+  _resolveRole() {
+    return this._cachedRole || (this.currentUser && this.currentUser.role) || null;
   }
 
   attachNavigationListeners() {
@@ -148,127 +257,148 @@ class AppController {
     });
   }
 
-  /**
-   * Decide whether to show the public landing page or the authenticated app shell.
-   */
-  async bootstrapView() {
-    if (!this.isAuthenticated) {
-      this.landing.show();
-      return;
-    }
-
-    this.landing.hide();
-    await this.loadCurrentView();
-  }
-
-  /**
-   * Resolve the effective user role for routing purposes.
-   * Priority: explicit cached role (set on login or after a successful probe).
-   */
-  _resolveRole() {
-    if (this._cachedRole) {
-      return this._cachedRole;
-    }
-    return null;
-  }
-
-  async loadCurrentView() {
+  showLoadingSpinner() {
     if (!this.mainContainer) return;
-
     this.mainContainer.innerHTML = `
       <div style="text-align: center; padding: 4rem 1rem;">
         <div style="width: 3rem; height: 3rem; border: 4px solid #e2e8f0; border-top-color: #059669; border-radius: 9999px; margin: 0 auto; animation: spin 1s linear infinite;"></div>
         <h3 style="font-weight: 800; margin-top: 1rem; color: #0f172a;">جاري التحميل...</h3>
       </div>
     `;
+  }
 
-    // Re-confirm auth (in case the session expired between views).
-    await this.checkAuthStatus();
+  renderError(error) {
+    if (!this.mainContainer) return;
+    this.mainContainer.innerHTML = `
+      <div style="background: #ffe4e6; border: 1px solid #fecdd3; border-radius: 1rem; padding: 2rem; text-align: center; margin-top: 2rem;">
+        <h3 style="color: #9f1239; font-weight: 800; font-size: 1.25rem;">تعذر الاتصال بالخادم</h3>
+        <p style="color: #e11d48; font-size: 0.85rem; margin-top: 0.5rem;">${error.message || 'حدث خطأ أثناء تحميل البيانات'}</p>
+        <p style="color: #64748b; font-size: 0.75rem; margin-top: 1rem;">يرجى المحاولة مرة أخرى لاحقاً.</p>
+        <button class="btn btn-primary" onclick="window.location.reload()" style="margin-top: 1rem;">إعادة المحاولة</button>
+      </div>
+    `;
+  }
 
-    if (!this.isAuthenticated) {
-      this.showLoginForm();
-      return;
-    }
-
-    const role = this._resolveRole();
-
+  /**
+   * Load and render Super Admin Dashboard
+   */
+  async loadSuperAdminDashboard() {
+    if (this.landing) this.landing.hide();
+    this.showLoadingSpinner();
     try {
-      let data = null;
-
-      // Role-aware routing. The role comes from the backend (login response)
-      // and is the single source of truth for which dashboard to open.
-      switch (role) {
-        case 'super_admin':
-          data = await ApiClient.getSuperAdminData();
-          this.controllerInstance = new SuperAdminController(
-            this.mainContainer, data, () => this.loadCurrentView()
-          );
-          break;
-
-        case 'teacher':
-        case 'staff':
-          data = await ApiClient.getTeacherData();
-          this.controllerInstance = new TeacherController(
-            this.mainContainer, data, () => this.loadCurrentView()
-          );
-          break;
-
-        case 'student':
-          data = await ApiClient.getStudentData();
-          this.controllerInstance = new StudentController(
-            this.mainContainer, data
-          );
-          break;
-
-        case 'parent':
-          data = await ApiClient.getParentData();
-          this.controllerInstance = new ParentController(
-            this.mainContainer, data, async (newChildId) => {
-              const newData = await ApiClient.getParentData(null, newChildId);
-              this.controllerInstance.data = newData;
-              this.controllerInstance.render();
-            }
-          );
-          break;
-
-        default:
-          // Unknown / unsupported role: clear the invalid authentication
-          // state and return the visitor to the public landing page.
-          console.warn('Unknown role for routing:', role);
-          this._handleInvalidRole();
-          return;
-      }
-
-      if (this.controllerInstance) {
-        this.controllerInstance.render();
-      }
-
+      const data = await ApiClient.getSuperAdminData();
+      this.controllerInstance = new SuperAdminController(
+        this.mainContainer, data, () => this.loadSuperAdminDashboard()
+      );
+      this.controllerInstance.render();
     } catch (error) {
-      console.error("View loading error:", error);
-      this.mainContainer.innerHTML = `
-        <div style="background: #ffe4e6; border: 1px solid #fecdd3; border-radius: 1rem; padding: 2rem; text-align: center; margin-top: 2rem;">
-          <h3 style="color: #9f1239; font-weight: 800; font-size: 1.25rem;">تعذر الاتصال بالخادم</h3>
-          <p style="color: #e11d48; font-size: 0.85rem; margin-top: 0.5rem;">${error.message}</p>
-          <p style="color: #64748b; font-size: 0.75rem; margin-top: 1rem;">يرجى المحاولة مرة أخرى لاحقاً.</p>
-          <button class="btn btn-primary" onclick="window.location.reload()" style="margin-top: 1rem;">إعادة المحاولة</button>
-        </div>
-      `;
+      console.error('Super Admin loading error:', error);
+      this.renderError(error);
     }
   }
 
   /**
-   * Clear any invalid/stale auth state and return the user to the landing page.
-   * Used when a logged-in user has a role we cannot route.
+   * Load and render Teacher Dashboard with tab activation
    */
-  _handleInvalidRole() {
-    this._clearCachedRole();
-    this.isAuthenticated = false;
-    this.currentUser = null;
-    this.controllerInstance = null;
-    if (this.landing) {
-      this.landing.show();
+  async loadTeacherDashboard(tab = 'overview') {
+    if (this.landing) this.landing.hide();
+
+    const validTabs = ['overview', 'classes', 'groups', 'students', 'attendance', 'exams', 'reports', 'staff', 'settings'];
+    const activeTab = validTabs.includes(tab) ? tab : 'overview';
+
+    // If controller instance is already active and holding data, switch tab smoothly without reloading data
+    if (this.controllerInstance instanceof TeacherController && this.controllerInstance.data) {
+      this.controllerInstance.activeTab = activeTab;
+      this.controllerInstance.render();
+      return;
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    this.showLoadingSpinner();
+    try {
+      const data = await ApiClient.getTeacherData();
+      this.controllerInstance = new TeacherController(
+        this.mainContainer, data, () => this.loadTeacherDashboard(activeTab)
+      );
+      this.controllerInstance.activeTab = activeTab;
+      this.controllerInstance.render();
+    } catch (error) {
+      console.error('Teacher loading error:', error);
+      this.renderError(error);
+    }
+  }
+
+  /**
+   * Load and render Student Dashboard with tab activation
+   */
+  async loadStudentDashboard(tab = 'overview') {
+    if (this.landing) this.landing.hide();
+
+    const validTabs = ['overview', 'schedule', 'homeworks', 'exams', 'lessons', 'subscriptions', 'settings'];
+    const activeTab = validTabs.includes(tab) ? tab : 'overview';
+
+    if (this.controllerInstance instanceof StudentController && this.controllerInstance.data) {
+      this.controllerInstance.activeTab = activeTab;
+      this.controllerInstance.render();
+      return;
+    }
+
+    this.showLoadingSpinner();
+    try {
+      const data = await ApiClient.getStudentData();
+      this.controllerInstance = new StudentController(
+        this.mainContainer, data
+      );
+      this.controllerInstance.activeTab = activeTab;
+      this.controllerInstance.render();
+    } catch (error) {
+      console.error('Student loading error:', error);
+      this.renderError(error);
+    }
+  }
+
+  /**
+   * Load and render Parent Dashboard with tab activation
+   */
+  async loadParentDashboard(tab = 'overview') {
+    if (this.landing) this.landing.hide();
+
+    const validTabs = ['overview', 'homeworks', 'attendance', 'exams', 'teachers'];
+    const activeTab = validTabs.includes(tab) ? tab : 'overview';
+
+    if (this.controllerInstance instanceof ParentController && this.controllerInstance.data) {
+      this.controllerInstance.activeTab = activeTab;
+      this.controllerInstance.render();
+      return;
+    }
+
+    this.showLoadingSpinner();
+    try {
+      const data = await ApiClient.getParentData();
+      this.controllerInstance = new ParentController(
+        this.mainContainer, data, async (newChildId) => {
+          const newData = await ApiClient.getParentData(null, newChildId);
+          this.controllerInstance.data = newData;
+          this.controllerInstance.selectedChildId = newChildId;
+          this.controllerInstance.render();
+        }
+      );
+      this.controllerInstance.activeTab = activeTab;
+      this.controllerInstance.render();
+    } catch (error) {
+      console.error('Parent loading error:', error);
+      this.renderError(error);
+    }
+  }
+
+  /**
+   * Compatibility method: navigate to the dashboard route of the current role
+   */
+  async loadCurrentView() {
+    const role = this._resolveRole();
+    const targetRoute = this.getDashboardRouteForRole(role);
+    if (this.router) {
+      await this.router.navigate(targetRoute);
+    }
   }
 
   showLoginForm() {
@@ -324,7 +454,11 @@ class AppController {
     const backBtn = document.getElementById('back-to-landing-btn');
     if (backBtn) {
       backBtn.addEventListener('click', () => {
-        this.logoutAndReturnToLanding();
+        if (this.router) {
+          this.router.navigate('/');
+        } else {
+          this.logoutAndReturnToLanding();
+        }
       });
     }
   }
@@ -347,18 +481,19 @@ class AppController {
       if (response.success) {
         this.isAuthenticated = true;
         this.currentUser = response.user;
-        // Capture the role returned by the backend (single source of truth).
-        // The role is the basis for dashboard routing on this load and on
-        // any subsequent page refresh in the same browser session.
         const role = (response.user && response.user.role) ? String(response.user.role) : null;
         this._setCachedRole(role);
-        if (this.landing) {
-          this.landing.hide();
+
+        const targetRoute = this.getDashboardRouteForRole(role);
+        if (this.router) {
+          await this.router.navigate(targetRoute);
+        } else {
+          if (this.landing) this.landing.hide();
+          await this.loadCurrentView();
         }
-        await this.loadCurrentView();
       } else {
         if (errorDiv) {
-          errorDiv.textContent = response.message || 'Failed to login';
+          errorDiv.textContent = response.message || 'فشل تسجيل الدخول';
           errorDiv.style.display = 'block';
         }
       }
@@ -379,16 +514,31 @@ class AppController {
     this.currentUser = null;
     this.controllerInstance = null;
     this.currentView = 'teacher-1';
-    if (this.landing) {
-      this.landing.show();
+
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('csrf_token');
+        sessionStorage.removeItem('user_role');
+      }
+    } catch (e) {
+      // ignore
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    if (this.router) {
+      this.router.replace('/');
+    } else {
+      if (this.landing) {
+        this.landing.show();
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   }
 }
 
 // Start Application when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
   const app = new AppController();
-  window.app = app; // Expose for LandingController cross-talk
+  window.app = app;
+  window.router = app.router;
   app.init();
 });
