@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>منصة إدارة تعليم موحدة (Unified Education Platform) | PHP 8.3 Native + MySQL</title>
-  
-  <!-- Vanilla CSS3 Stylesheets (No Tailwind, No External Libraries) -->
+  <title>منصة إدارة تعليم موحدة</title>
+
   <link rel="stylesheet" href="assets/css/reset.css" />
   <link rel="stylesheet" href="assets/css/style.css" />
   <link rel="stylesheet" href="assets/css/qr.css" />
-  
+  <link rel="stylesheet" href="assets/css/landing.css" />
+
   <style>
     @keyframes spin {
       to { transform: rotate(360deg); }
@@ -18,54 +18,526 @@
 </head>
 <body>
 
-  <!-- Top Navigation Header -->
-  <header class="navbar">
-    <div class="navbar-banner">
-      منصة تعليمية Multi-Tenant SaaS موحدة — PHP 8.3 Native + MySQL + HTML5/CSS3/Vanilla JS متوافقة تماماً مع سيرفرات cPanel المشتركة
-    </div>
-    
+  <!-- ============================================================
+       PUBLIC LANDING PAGE
+       Shown to visitors before authentication.
+       ============================================================ -->
+  <div id="landing-page" class="landing-page">
+
+    <!-- Navbar -->
+    <header class="landing-navbar">
+      <div class="landing-navbar-content">
+        <a href="#hero" class="landing-navbar-brand">
+          <div class="brand-icon">م</div>
+          <h1 class="brand-title">منصة إدارة تعليم موحدة</h1>
+        </a>
+
+        <nav class="landing-nav-links" aria-label="روابط الصفحة">
+          <a href="#hero" class="landing-nav-link">الرئيسية</a>
+          <a href="#about" class="landing-nav-link">عن المنصة</a>
+          <a href="#features" class="landing-nav-link">المميزات</a>
+          <a href="#users" class="landing-nav-link">المستخدمون</a>
+          <a href="#how" class="landing-nav-link">كيف تعمل؟</a>
+          <a href="#faq" class="landing-nav-link">الأسئلة الشائعة</a>
+        </nav>
+
+        <div class="landing-nav-actions">
+          <button type="button" class="landing-btn landing-btn-ghost" data-landing-action="login">دخول</button>
+          <button type="button" class="landing-btn landing-btn-primary" data-landing-action="register">تسجيل جديد</button>
+          <button type="button" id="landing-mobile-toggle" class="landing-mobile-toggle" aria-label="القائمة">☰</button>
+        </div>
+
+        <div id="landing-mobile-menu" class="landing-mobile-menu">
+          <a href="#hero" class="landing-nav-link">الرئيسية</a>
+          <a href="#about" class="landing-nav-link">عن المنصة</a>
+          <a href="#features" class="landing-nav-link">المميزات</a>
+          <a href="#users" class="landing-nav-link">المستخدمون</a>
+          <a href="#how" class="landing-nav-link">كيف تعمل؟</a>
+          <a href="#faq" class="landing-nav-link">الأسئلة الشائعة</a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="landing-hero" id="hero">
+      <div class="landing-hero-inner">
+        <div>
+          <span class="landing-hero-eyebrow">منصة تعليمية متكاملة</span>
+          <h2 class="landing-hero-title">
+            منصة تعليمية متكاملة
+            <br />
+            لإدارة وتطوير العملية <span class="accent">التعليمية</span>
+          </h2>
+          <p class="landing-hero-desc">
+            حل موحد يساعد المؤسسات التعليمية والمعلمين والطلاب وأولياء الأمور على إدارة العملية التعليمية ومتابعتها بسهولة من مكان واحد.
+          </p>
+          <div class="landing-hero-actions">
+            <button type="button" class="landing-btn landing-btn-primary landing-btn-lg" data-landing-action="register">ابدأ الآن</button>
+            <button type="button" class="landing-btn landing-btn-secondary landing-btn-lg" data-landing-action="login">تسجيل الدخول</button>
+          </div>
+        </div>
+
+        <div class="landing-hero-illustration" aria-hidden="true">
+          <div class="illu-main"></div>
+          <div class="illu-card illu-1">
+            <div class="illu-icon" style="background:#ecfdf5;color:#047857;">📚</div>
+            <div>إدارة الطلاب</div>
+          </div>
+          <div class="illu-card illu-2">
+            <div class="illu-icon" style="background:#e0e7ff;color:#4f46e5;">✓</div>
+            <div>الحضور والغياب</div>
+          </div>
+          <div class="illu-card illu-3">
+            <div class="illu-icon" style="background:#fef3c7;color:#b45309;">📊</div>
+            <div>التقارير والإحصائيات</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- About -->
+    <section class="landing-section landing-section-alt" id="about">
+      <div class="landing-section-inner">
+        <div class="landing-about-grid">
+          <div class="landing-about-text">
+            <span class="landing-section-eyebrow">عن المنصة</span>
+            <h3 class="landing-section-title">بيئة واحدة لإدارة العملية التعليمية</h3>
+            <p>
+              منصة تعليمية موحدة تساعد على إدارة العملية التعليمية من خلال بيئة واحدة تجمع مختلف أطراف العملية التعليمية، مع صلاحيات مخصصة لكل مستخدم وحماية وعزل للبيانات حسب الجهة التعليمية.
+            </p>
+            <p>
+              تتيح المنصة للمؤسسات التعليمية تنظيم الفصول والمجموعات والطلاب، ومتابعة الحضور والامتحانات والواجبات، وإصدار التقارير، بالإضافة إلى إتاحة تواصل مستمر مع أولياء الأمور في إطار منظم وآمن.
+            </p>
+          </div>
+          <div>
+            <div class="landing-about-stats">
+              <div class="landing-about-stat">
+                <div class="num">+5</div>
+                <div class="lbl">أدوار للمستخدمين</div>
+              </div>
+              <div class="landing-about-stat">
+                <div class="num">+20</div>
+                <div class="lbl">ميزة رئيسية</div>
+              </div>
+              <div class="landing-about-stat">
+                <div class="num">1</div>
+                <div class="lbl">منصة موحدة</div>
+              </div>
+              <div class="landing-about-stat">
+                <div class="num">∞</div>
+                <div class="lbl">جهات تعليمية</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Who can use -->
+    <section class="landing-section" id="users">
+      <div class="landing-section-inner">
+        <div class="landing-section-header">
+          <span class="landing-section-eyebrow">المستخدمون</span>
+          <h3 class="landing-section-title">من يمكنه استخدام المنصة؟</h3>
+          <p class="landing-section-subtitle">
+            صُممت المنصة لتخدم جميع أطراف العملية التعليمية، بحيث يحصل كل دور على الصلاحيات والواجهات المناسبة له.
+          </p>
+        </div>
+
+        <div class="landing-roles-grid">
+          <div class="landing-role-card">
+            <div class="landing-role-icon">👨‍🏫</div>
+            <h4 class="landing-role-title">المعلم</h4>
+            <ul class="landing-role-list">
+              <li>إدارة الطلاب</li>
+              <li>متابعة الحضور</li>
+              <li>الامتحانات والتقييمات</li>
+              <li>التقارير</li>
+            </ul>
+          </div>
+
+          <div class="landing-role-card">
+            <div class="landing-role-icon">🎓</div>
+            <h4 class="landing-role-title">الطالب</h4>
+            <ul class="landing-role-list">
+              <li>متابعة الدروس</li>
+              <li>الاختبارات</li>
+              <li>النتائج</li>
+              <li>التقدم الدراسي</li>
+            </ul>
+          </div>
+
+          <div class="landing-role-card">
+            <div class="landing-role-icon">👨‍👩‍👧</div>
+            <h4 class="landing-role-title">ولي الأمر</h4>
+            <ul class="landing-role-list">
+              <li>متابعة الأبناء</li>
+              <li>الحضور</li>
+              <li>النتائج</li>
+              <li>التقارير</li>
+            </ul>
+          </div>
+
+          <div class="landing-role-card staff">
+            <div class="landing-role-icon">🧑‍💼</div>
+            <h4 class="landing-role-title">الموظف / السكرتارية</h4>
+            <ul class="landing-role-list">
+              <li>إدارة العمليات المسموح بها</li>
+              <li>متابعة البيانات</li>
+              <li>تنفيذ المهام حسب الصلاحيات</li>
+            </ul>
+          </div>
+
+          <div class="landing-role-card admin">
+            <div class="landing-role-icon">🛡️</div>
+            <h4 class="landing-role-title">الإدارة العامة</h4>
+            <ul class="landing-role-list">
+              <li>إدارة المنصة</li>
+              <li>متابعة الجهات التعليمية</li>
+              <li>الإحصائيات العامة</li>
+              <li>الإدارة المركزية</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="landing-section landing-section-alt" id="features">
+      <div class="landing-section-inner">
+        <div class="landing-section-header">
+          <span class="landing-section-eyebrow">المميزات</span>
+          <h3 class="landing-section-title">كل ما تحتاجه العملية التعليمية في مكان واحد</h3>
+          <p class="landing-section-subtitle">
+            مجموعة متكاملة من الأدوات والميزات التي تغطي الجوانب المختلفة لإدارة ومتابعة العملية التعليمية.
+          </p>
+        </div>
+
+        <div class="landing-features-grid">
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">👥</div>
+            <h4 class="landing-feature-title">إدارة الطلاب</h4>
+            <p class="landing-feature-desc">إضافة وتنظيم بيانات الطلاب وربطهم بالمجموعات والصفوف بسهولة.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">👨‍🏫</div>
+            <h4 class="landing-feature-title">إدارة المعلمين</h4>
+            <p class="landing-feature-desc">متابعة حسابات المعلمين وبياناتهم وصفوفهم ومجموعاتهم.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">📋</div>
+            <h4 class="landing-feature-title">الحضور والغياب</h4>
+            <p class="landing-feature-desc">تسجيل الحضور بطرق متعددة مع تقارير دقيقة وشاملة.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">📝</div>
+            <h4 class="landing-feature-title">الامتحانات والتقييمات</h4>
+            <p class="landing-feature-desc">إنشاء الامتحانات وتقييم الطلاب وعرض النتائج بشكل منظم.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">❓</div>
+            <h4 class="landing-feature-title">بنك الأسئلة</h4>
+            <p class="landing-feature-desc">تنظيم الأسئلة حسب المادة والنوع لإعادة استخدامها في اختبارات متعددة.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">📊</div>
+            <h4 class="landing-feature-title">التقارير والإحصائيات</h4>
+            <p class="landing-feature-desc">تقارير تفصيلية عن الأداء والحضور والدرجات والمالية.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">👨‍👩‍👧</div>
+            <h4 class="landing-feature-title">متابعة أولياء الأمور</h4>
+            <p class="landing-feature-desc">إطلاع أولياء الأمور على مستوى أبنائهم وتفاصيل متابعتهم.</p>
+          </div>
+          <div class="landing-feature-card">
+            <div class="landing-feature-icon">🔐</div>
+            <h4 class="landing-feature-title">إدارة الموظفين والصلاحيات</h4>
+            <p class="landing-feature-desc">إنشاء حسابات للسكرتارية والمساعدين مع تخصيص دقيق للصلاحيات.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Multi-Tenant concept -->
+    <section class="landing-section" id="multitenant">
+      <div class="landing-section-inner">
+        <div class="landing-multitenant">
+          <div class="landing-multitenant-text">
+            <span class="landing-section-eyebrow">بنية متعددة الجهات</span>
+            <h3 class="landing-section-title">كل جهة تعليمية في بيئتها الخاصة</h3>
+            <p>
+              تم تصميم المنصة لتخدم أكثر من جهة تعليمية داخل نظام موحد، مع الحفاظ على استقلالية بيانات كل جهة وصلاحيات مستخدميها.
+            </p>
+            <p>
+              هذا يعني أن كل مؤسسة تعليمية تعمل داخل مساحة معزولة وآمنة، دون أن تتأثر بمؤسسات أخرى على نفس المنصة، مع الاستفادة من نفس الأدوات والميزات.
+            </p>
+          </div>
+          <div class="landing-multitenant-visual" aria-hidden="true">
+            <div class="mtv-platform">منصة واحدة</div>
+            <div class="mtv-arrow">↓</div>
+            <div class="mtv-tree">┌────┼────┐</div>
+            <div class="mtv-arrow">↓&nbsp;&nbsp;&nbsp;↓&nbsp;&nbsp;&nbsp;↓</div>
+            <div class="mtv-tenants">
+              <div class="mtv-tenant"><span class="mt-letter">A</span>جهة</div>
+              <div class="mtv-tenant"><span class="mt-letter">B</span>جهة</div>
+              <div class="mtv-tenant"><span class="mt-letter">C</span>جهة</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Security -->
+    <section class="landing-section landing-section-alt" id="security">
+      <div class="landing-section-inner">
+        <div class="landing-section-header">
+          <span class="landing-section-eyebrow">الأمان والتحكم</span>
+          <h3 class="landing-section-title">مصمم ليمنح كل مستخدم ما يحتاجه فقط</h3>
+          <p class="landing-section-subtitle">
+            تعتمد المنصة على مبادئ الأمان والصلاحيات لضمان أن كل مستخدم يصل فقط إلى البيانات والمهام التي تخص دوره.
+          </p>
+        </div>
+
+        <div class="landing-security-grid">
+          <div class="landing-security-card">
+            <div class="landing-security-icon">🔑</div>
+            <h4 class="landing-security-title">صلاحيات حسب الدور</h4>
+            <p class="landing-security-desc">كل دور يحصل على الصلاحيات المناسبة لمسؤولياته فقط.</p>
+          </div>
+          <div class="landing-security-card">
+            <div class="landing-security-icon">🗂️</div>
+            <h4 class="landing-security-title">عزل البيانات</h4>
+            <p class="landing-security-desc">بيانات كل جهة تعليمية معزولة ومحمية عن غيرها.</p>
+          </div>
+          <div class="landing-security-card">
+            <div class="landing-security-icon">🔒</div>
+            <h4 class="landing-security-title">تسجيل دخول آمن</h4>
+            <p class="landing-security-desc">جلسات محمية وآليات تحقق من هوية المستخدم.</p>
+          </div>
+          <div class="landing-security-card">
+            <div class="landing-security-icon">🛡️</div>
+            <h4 class="landing-security-title">حماية العمليات الحساسة</h4>
+            <p class="landing-security-desc">العمليات الحساسة محمية بآليات تحقق إضافية.</p>
+          </div>
+          <div class="landing-security-card">
+            <div class="landing-security-icon">⏱️</div>
+            <h4 class="landing-security-title">إدارة الجلسات</h4>
+            <p class="landing-security-desc">سياسات إدارة جلسات تمنع الاستخدام غير المصرح به.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="landing-section" id="how">
+      <div class="landing-section-inner">
+        <div class="landing-section-header">
+          <span class="landing-section-eyebrow">كيف تبدأ؟</span>
+          <h3 class="landing-section-title">خطوات بسيطة للوصول إلى لوحتك</h3>
+          <p class="landing-section-subtitle">
+            لا حاجة لاختيار الدور أو الواجهة بنفسك — النظام يتعرف على دورك ويوجهك تلقائيًا.
+          </p>
+        </div>
+
+        <div class="landing-howitworks">
+          <div class="landing-step">
+            <div class="landing-step-num">01</div>
+            <h4 class="landing-step-title">إنشاء حساب</h4>
+            <p class="landing-step-desc">يتم إنشاء الحساب من قبل إدارة المنصة أو الجهة التعليمية التابع لها المستخدم.</p>
+          </div>
+          <div class="landing-step">
+            <div class="landing-step-num">02</div>
+            <h4 class="landing-step-title">تسجيل الدخول</h4>
+            <p class="landing-step-desc">يدخل المستخدم بياناته (البريد وكلمة المرور) عبر شاشة الدخول الموحدة.</p>
+          </div>
+          <div class="landing-step">
+            <div class="landing-step-num">03</div>
+            <h4 class="landing-step-title">تحديد الصلاحيات تلقائيًا</h4>
+            <p class="landing-step-desc">يتعرف النظام على دور المستخدم وصلاحياته بناءً على بياناته في النظام.</p>
+          </div>
+          <div class="landing-step">
+            <div class="landing-step-num">04</div>
+            <h4 class="landing-step-title">الانتقال للوحة المناسبة</h4>
+            <p class="landing-step-desc">يصل المستخدم تلقائيًا إلى لوحة التحكم الخاصة بدوره دون أي اختيار يدوي.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick overview / Stats -->
+    <section class="landing-section landing-section-alt" id="overview">
+      <div class="landing-section-inner">
+        <div class="landing-section-header">
+          <span class="landing-section-eyebrow">نظرة سريعة</span>
+          <h3 class="landing-section-title">منظومة متكاملة</h3>
+        </div>
+
+        <div class="landing-stats">
+          <div class="landing-stat-item">
+            <div class="landing-stat-num">منصة واحدة</div>
+            <div class="landing-stat-lbl">لإدارة كل شيء</div>
+          </div>
+          <div class="landing-stat-item">
+            <div class="landing-stat-num">+5 أدوار</div>
+            <div class="landing-stat-lbl">تخدم جميع الأطراف</div>
+          </div>
+          <div class="landing-stat-item">
+            <div class="landing-stat-num">إدارة مركزية</div>
+            <div class="landing-stat-lbl">للمنصة ككل</div>
+          </div>
+          <div class="landing-stat-item">
+            <div class="landing-stat-num">بيئة آمنة</div>
+            <div class="landing-stat-lbl">بصلاحيات معزولة</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="landing-section" id="faq">
+      <div class="landing-section-inner">
+        <div class="landing-section-header">
+          <span class="landing-section-eyebrow">الأسئلة الشائعة</span>
+          <h3 class="landing-section-title">إجابات على أكثر الأسئلة شيوعًا</h3>
+        </div>
+
+        <div class="landing-faq-list">
+          <div class="landing-faq-item">
+            <button type="button" class="landing-faq-q" aria-expanded="false">
+              <span>ما هي المنصة؟</span>
+              <span class="landing-faq-icon" aria-hidden="true">+</span>
+            </button>
+            <div class="landing-faq-a">
+              منصة لإدارة ومتابعة العملية التعليمية من مكان واحد، تتيح للمؤسسات التعليمية والمعلمين والطلاب وأولياء الأمور تنظيم ومتابعة الجوانب المختلفة للعملية التعليمية.
+            </div>
+          </div>
+
+          <div class="landing-faq-item">
+            <button type="button" class="landing-faq-q" aria-expanded="false">
+              <span>من يمكنه استخدام المنصة؟</span>
+              <span class="landing-faq-icon" aria-hidden="true">+</span>
+            </button>
+            <div class="landing-faq-a">
+              المعلمون والطلاب وأولياء الأمور والموظفون والإدارة، وذلك حسب الصلاحيات الممنوحة لكل دور داخل الجهة التعليمية التابع لها المستخدم.
+            </div>
+          </div>
+
+          <div class="landing-faq-item">
+            <button type="button" class="landing-faq-q" aria-expanded="false">
+              <span>هل يستطيع المستخدم رؤية بيانات مستخدم آخر؟</span>
+              <span class="landing-faq-icon" aria-hidden="true">+</span>
+            </button>
+            <div class="landing-faq-a">
+              لا، الوصول إلى البيانات يعتمد على الدور والصلاحيات والجهة التعليمية، بحيث لا يمكن لأي مستخدم الوصول إلى بيانات خارج نطاق صلاحياته.
+            </div>
+          </div>
+
+          <div class="landing-faq-item">
+            <button type="button" class="landing-faq-q" aria-expanded="false">
+              <span>هل يمكن استخدام المنصة من أكثر من جهة تعليمية؟</span>
+              <span class="landing-faq-icon" aria-hidden="true">+</span>
+            </button>
+            <div class="landing-faq-a">
+              نعم، النظام مصمم لدعم أكثر من جهة تعليمية مع عزل البيانات والصلاحيات بين الجهات المختلفة.
+            </div>
+          </div>
+
+          <div class="landing-faq-item">
+            <button type="button" class="landing-faq-q" aria-expanded="false">
+              <span>كيف أصل إلى لوحة التحكم؟</span>
+              <span class="landing-faq-icon" aria-hidden="true">+</span>
+            </button>
+            <div class="landing-faq-a">
+              بعد تسجيل الدخول يتم توجيه المستخدم تلقائيًا إلى الواجهة المناسبة لحسابه ودوره، دون الحاجة لاختيار لوحة معينة.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="landing-final-cta" id="cta">
+      <div class="landing-final-cta-inner">
+        <h2>ابدأ رحلتك التعليمية اليوم</h2>
+        <p>انضم إلى بيئة تعليمية موحدة تساعدك على إدارة ومتابعة العملية التعليمية بسهولة.</p>
+        <div class="landing-final-cta-actions">
+          <button type="button" class="landing-btn landing-btn-primary landing-btn-lg" data-landing-action="register">تسجيل جديد</button>
+          <button type="button" class="landing-btn landing-btn-ghost landing-btn-lg" data-landing-action="login">دخول</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="landing-footer">
+      <div class="landing-footer-inner">
+        <div>
+          <div class="landing-footer-brand">
+            <span class="bi">م</span>
+            <span>منصة إدارة تعليم موحدة</span>
+          </div>
+          <p style="color:#94a3b8;font-size:0.85rem;line-height:1.7;max-width:30rem;">
+            منصة لإدارة ومتابعة العملية التعليمية من مكان واحد، تخدم المؤسسات التعليمية والمعلمين والطلاب وأولياء الأمور.
+          </p>
+        </div>
+
+        <div class="landing-footer-col">
+          <h4>روابط الصفحة</h4>
+          <ul>
+            <li><a href="#hero">الرئيسية</a></li>
+            <li><a href="#about">عن المنصة</a></li>
+            <li><a href="#features">المميزات</a></li>
+            <li><a href="#users">المستخدمون</a></li>
+            <li><a href="#how">كيف تعمل؟</a></li>
+            <li><a href="#faq">الأسئلة الشائعة</a></li>
+          </ul>
+        </div>
+
+        <div class="landing-footer-col">
+          <h4>الحساب</h4>
+          <ul>
+            <li><a href="#" data-landing-action="login">دخول</a></li>
+            <li><a href="#" data-landing-action="register">تسجيل جديد</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="landing-footer-bottom">
+        © <span id="landing-year"></span> منصة إدارة تعليم موحدة — جميع الحقوق محفوظة.
+      </div>
+    </footer>
+
+  </div>
+  <!-- /#landing-page -->
+
+  <!-- ============================================================
+       AUTHENTICATED APP SHELL
+       Shown only after a successful login.
+       ============================================================ -->
+  <header id="app-navbar" class="navbar" style="display: none;">
     <div class="navbar-content">
       <div class="brand">
         <div class="brand-icon">م</div>
         <div>
           <div style="display: flex; align-items: center; gap: 0.5rem;">
             <h1 class="brand-title">منصة إدارة تعليم موحدة</h1>
-            <span class="badge badge-emerald" style="background: #059669; color: #fff;">SaaS</span>
           </div>
-          <p class="brand-sub">عزل كامل لبيانات المدرسين (Multi-Tenant) • حسابات طلاب وأولياء أمور موحدة</p>
         </div>
-      </div>
-      
-      <!-- Role Switcher Pills -->
-      <div class="role-pills">
-        <button class="role-pill active" data-role-view="teacher-1">أ. أحمد محمود (فيزياء)</button>
-        <button class="role-pill" data-role-view="teacher-2">أ. سارة عادل (رياضيات)</button>
-        <button class="role-pill student-pill" data-role-view="student">الطالب: يوسف محمد</button>
-        <button class="role-pill" data-role-view="parent">ولي الأمر: م. محمد سعيد</button>
-        <button class="role-pill" data-role-view="staff">المساعد / السكرتارية</button>
-        <button class="role-pill admin-pill" data-role-view="super_admin">الإدارة العامة (Super Admin)</button>
       </div>
     </div>
   </header>
 
   <!-- Main Application Area -->
-  <main class="container" id="app-main-content">
-    <!-- Rendered dynamically by Vanilla JS SPA Router (app.js) -->
+  <main id="app-main-content" class="container is-hidden-by-landing">
+    <!-- Rendered dynamically by the SPA router -->
   </main>
 
-  <!-- Footer -->
-  <footer style="text-align: center; padding: 2rem 1rem; border-top: 1px solid #e2e8f0; margin-top: 4rem; color: #64748b; font-size: 0.75rem;">
-    <div>منصة إدارة تعليم موحدة (Unified Education Platform) | متوافقة 100% مع Apache / cPanel Shared Hosting</div>
-    <div style="margin-top: 0.35rem;">Backend: PHP 8.3 Native فقط • Frontend: HTML5 + CSS3 + JavaScript Vanilla فقط • Database: MySQL فقط</div>
-  </footer>
-
-  <!-- Pure Vanilla JavaScript Scripts (No React, No Next, No jQuery) -->
+  <!-- Application Scripts -->
   <script src="assets/js/api.js"></script>
   <script src="assets/js/qr-generator.js"></script>
   <script src="assets/js/teacher.js"></script>
   <script src="assets/js/student.js"></script>
   <script src="assets/js/parent.js"></script>
   <script src="assets/js/admin.js"></script>
+  <script src="assets/js/landing.js"></script>
   <script src="assets/js/app.js"></script>
 </body>
 </html>

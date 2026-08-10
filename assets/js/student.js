@@ -1,5 +1,5 @@
 /**
- * Vanilla JavaScript Controller for the 7 Mandatory Student Unified Account Pages
+ * JavaScript Controller for the 7 Mandatory Student Unified Account Pages
  */
 class StudentController {
   constructor(containerElement, data) {
@@ -20,7 +20,7 @@ class StudentController {
             </div>
             <div>
               <span class="badge badge-emerald">حساب طالب موحد (Unified Account)</span>
-              <h2 style="font-size: 1.75rem; font-weight: 800; margin-top: 0.35rem;">${st.name || 'يوسف محمد سعيد'}</h2>
+              <h2 style="font-size: 1.75rem; font-weight: 800; margin-top: 0.35rem;">${st.name || ''}</h2>
               <p style="font-size: 0.8rem; color: #e0e7ff; margin-top: 0.2rem;">كود الطالب: <strong style="font-family: monospace;">${st.student_code}</strong> • متابعة جميع المدرسين من مكان واحد</p>
             </div>
           </div>
@@ -69,22 +69,22 @@ class StudentController {
       <div class="grid-4">
         <div class="stat-card">
           <span class="stat-card-title">الدرس القادم</span>
-          <div class="stat-card-value" style="font-size: 1.25rem;">الفيزياء (أ. أحمد محمود)</div>
-          <div class="stat-card-desc">الأحد القادم الساعة 05:00 مساءً</div>
+          <div class="stat-card-value" style="font-size: 1.25rem;">—</div>
+          <div class="stat-card-desc">لا توجد حصص قادمة</div>
         </div>
         <div class="stat-card">
           <span class="stat-card-title">الامتحان القادم</span>
-          <div class="stat-card-value" style="font-size: 1.25rem;">امتحان شهر مارس الشامل</div>
-          <div class="stat-card-desc">31 مارس • 90 دقيقة</div>
+          <div class="stat-card-value" style="font-size: 1.25rem;">—</div>
+          <div class="stat-card-desc">لا توجد امتحانات قادمة</div>
         </div>
         <div class="stat-card">
           <span class="stat-card-title">آخر الواجبات</span>
-          <div class="stat-card-value" style="font-size: 1.25rem;">مسائل قانون أوم</div>
-          <div class="stat-card-desc">تم التسليم • 19.5/20</div>
+          <div class="stat-card-value" style="font-size: 1.25rem;">—</div>
+          <div class="stat-card-desc">لا توجد واجبات حديثة</div>
         </div>
         <div class="stat-card">
           <span class="stat-card-title">المدرسون المشترك معهم</span>
-          <div class="stat-card-value">${subs.length || 2} مدرسين</div>
+          <div class="stat-card-value">${subs.length} مدرسين</div>
           <div class="stat-card-desc">بدون الحاجة لتعدد الحسابات</div>
         </div>
       </div>
@@ -92,10 +92,7 @@ class StudentController {
       <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 1.5rem;">
         <h3 style="font-weight: 800; font-size: 1.15rem;">المدرسون المشترك معهم حالياً:</h3>
         <div class="grid-2" style="margin-top: 1rem;">
-          ${(subs.length ? subs : [
-            { teacher_name: 'أ. أحمد محمود', subject: 'الفيزياء', group_name: 'مجموعة الأحد والثلاثاء' },
-            { teacher_name: 'أ. سارة عادل', subject: 'الرياضيات', group_name: 'مجموعة التفوق' }
-          ]).map(s => `
+          ${subs.map(s => `
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem;">
               <h4 style="font-weight: 800;">${s.teacher_name}</h4>
               <p style="font-size: 0.8rem; color: #64748b;">${s.subject} • ${s.group_name}</p>
@@ -156,7 +153,7 @@ class StudentController {
               ${h.submission_status === 'graded' ? 'تم التقييم' : 'تم التسليم'}
             </span>
           </td>
-          <td style="padding: 1rem; font-weight: 800; color: #059669;">${h.grade || 19.5} / ${h.max_grade || 20}</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${h.grade || 0} / ${h.max_grade || 0}</td>
           <td style="padding: 1rem;">${h.feedback || '—'}</td>
         </tr>
       `;
@@ -195,7 +192,7 @@ class StudentController {
           <td style="padding: 1rem;">${e.teacher_name}</td>
           <td style="padding: 1rem;">${e.date} (${e.time})</td>
           <td style="padding: 1rem;">${e.duration_minutes} دقيقة</td>
-          <td style="padding: 1rem; font-weight: 800; color: #059669;">${e.score || 11} / ${e.max_score || 12}</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${e.score || 0} / ${e.max_score || 0}</td>
         </tr>
       `;
     });

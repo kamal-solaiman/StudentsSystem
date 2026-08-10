@@ -1,5 +1,5 @@
 /**
- * Vanilla JavaScript Controller for Super Admin SaaS Dashboard
+ * JavaScript Controller for Super Admin SaaS Dashboard
  * Formula: number of active students * price_per_student
  */
 class SuperAdminController {
@@ -55,7 +55,7 @@ class SuperAdminController {
         <div class="stat-card">
           <span class="stat-card-title">إجمالي المدرسين (Tenants)</span>
           <div class="stat-card-value">${summary.total_teachers || 0}</div>
-          <div class="stat-card-desc">مساحات معزولة Multi-Tenant</div>
+          <div class="stat-card-desc">مساحات معزولة لكل مدرس</div>
         </div>
         <div class="stat-card">
           <span class="stat-card-title">الطلاب النشطون (بالمنصة)</span>
@@ -78,7 +78,7 @@ class SuperAdminController {
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
           <div>
-            <h3 style="font-weight: 800; font-size: 1.15rem;">قائمة المدرسين واشتراكات الـ SaaS الشهرية (Active Multi-Tenant)</h3>
+            <h3 style="font-weight: 800; font-size: 1.15rem;">قائمة المدرسين واشتراكات الـ SaaS الشهرية</h3>
             <p style="font-size: 0.8rem; color: #64748b;">كل مدرس يمتلك مساحة مستقلة معزولة، ويتم احتساب اشتراكه بناءً على عدد الطلاب المسجلين لديه</p>
           </div>
         </div>
@@ -139,7 +139,7 @@ class SuperAdminController {
             platform_name: platformName,
             default_price_per_student: price
           });
-          alert('تم حفظ الإعدادات بنجاح في قاعدة البيانات MySQL');
+          alert('تم حفظ الإعدادات بنجاح في قاعدة البيانات');
           if (this.onRefresh) this.onRefresh();
         } catch (error) {
           alert('حدث خطأ أثناء حفظ الإعدادات: ' + error.message);
