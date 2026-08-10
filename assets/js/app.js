@@ -265,29 +265,53 @@ class AppController {
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn) {
       logoutBtn.hidden = !visible;
+      // NOTE: `.btn { display: inline-flex }` in style.css overrides the
+      // `hidden` attribute's UA default of `display: none`, so the attribute
+      // alone does NOT hide the button (stale label stayed visible on /login).
+      // Force the display state explicitly to guarantee it is hidden/shown.
+      logoutBtn.style.display = visible ? '' : 'none';
+    }
+  }
+
+  /**
+   * Set the logout button idle / busy UI state.
+   * Single source of truth so the button can never be left stuck in
+   * 'جارٍ تسجيل الخروج...' regardless of how the request finishes.
+   */
+  setLogoutButtonState(btn, busy) {
+    const label = btn ? btn.querySelector('[data-logout-label]') : null;
+    btn.disabled = busy;
+    if (busy) {
+      btn.setAttribute('aria-busy', 'true');
+      if (label) {
+        label.textContent = 'جارٍ تسجيل الخروج...';
+      }
+    } else {
+      btn.removeAttribute('aria-busy');
+      if (label) {
+        label.textContent = 'تسجيل الخروج';
+      }
     }
   }
 
   attachLogoutListener() {
     const logoutBtn = document.getElementById('logout-btn');
-    if (logoutBtn) {
-      logoutBtn.addEventListener('click', async () => {
-        await this.handleLogout(logoutBtn);
-      });
+    // Idempotent guard: never attach a second click handler to the same button.
+    if (!logoutBtn || logoutBtn.dataset.logoutListenerAttached === 'true') {
+      return;
     }
+    logoutBtn.dataset.logoutListenerAttached = 'true';
+    logoutBtn.addEventListener('click', async () => {
+      await this.handleLogout(logoutBtn);
+    });
   }
 
   async handleLogout(logoutBtn) {
+    // Re-entrancy guard: no second logout request while one is in flight.
     if (this.isLoggingOut) return;
 
     this.isLoggingOut = true;
-    logoutBtn.disabled = true;
-    logoutBtn.setAttribute('aria-busy', 'true');
-
-    const label = logoutBtn.querySelector('[data-logout-label]');
-    if (label) {
-      label.textContent = 'جارٍ تسجيل الخروج...';
-    }
+    this.setLogoutButtonState(logoutBtn, true);
 
     try {
       const response = await ApiClient.logout();
@@ -298,14 +322,16 @@ class AppController {
       // Only clear the browser state after the server confirms session destruction.
       await this.logoutAndReturnToLanding();
     } catch (error) {
+      // Failure path (server error, HTTP error, network error, exception):
+      // surface a message and leave the button usable again.
       console.error('Logout error:', error);
       alert('تعذر تسجيل الخروج: ' + (error.message || 'يرجى المحاولة مرة أخرى'));
-      logoutBtn.disabled = false;
-      logoutBtn.removeAttribute('aria-busy');
-      if (label) {
-        label.textContent = 'تسجيل الخروج';
-      }
     } finally {
+      // ALWAYS restore the button to its idle state — success, failure,
+      // HTTP error, network error or unexpected exception alike.
+      // (On success logoutAndReturnToLanding() also hides the button, so the
+      // restored label is never visible until the next dashboard visit.)
+      this.setLogoutButtonState(logoutBtn, false);
       this.isLoggingOut = false;
     }
   }
