@@ -97,13 +97,8 @@ function qr_handle_generate(int $teacherId, array $input): never
 {
     $secret = qr_secret();
     if ($secret === null) {
+        // Fail closed: deployment must provide the private server-only secret.
         Helper::sendJson(['success' => false, 'message' => 'خدمة رمز الحضور غير مهيأة على الخادم'], 503);
-    }
-
-    try {
-        $db = DatabaseConnection::fromConfigFile()->connect();
-    } catch (Throwable) {
-        Helper::sendJson(['success' => false, 'message' => 'حدث خطأ غير متوقع'], 500);
     }
 
     $groupId = Helper::sanitizeInt($input['group_id'] ?? null, 1);
@@ -111,49 +106,58 @@ function qr_handle_generate(int $teacherId, array $input): never
         Helper::sendJson(['success' => false, 'message' => 'بيانات الطلب غير صالحة'], 400);
     }
 
-    // Ownership: the group must belong to this teacher (tenant isolation)
-    $stmtG = $db->prepare('SELECT class_id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
-    $stmtG->execute(['gid' => $groupId, 'tid' => $teacherId]);
-    $group = $stmtG->fetch();
-    if ($group === false) {
-        Helper::sendForbidden('Access denied');
+    try {
+        $db = DatabaseConnection::fromConfigFile()->connect();
+
+        // Ownership: the group must belong to this teacher (tenant isolation)
+        $stmtG = $db->prepare('SELECT class_id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
+        $stmtG->execute(['gid' => $groupId, 'tid' => $teacherId]);
+        $group = $stmtG->fetch();
+        if ($group === false) {
+            Helper::sendForbidden('Access denied');
+        }
+        $classId = (int)$group['class_id'];
+
+        // Ownership: the derived class must belong to the same teacher
+        $stmtC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+        $stmtC->execute(['cid' => $classId, 'tid' => $teacherId]);
+        if ($stmtC->fetch() === false) {
+            Helper::sendForbidden('Access denied');
+        }
+
+        // Signed payload (Unix timestamps — UTC-consistent)
+        $iat = time();
+        $exp = $iat + QR_TTL_SECONDS;
+        $nonce = bin2hex(random_bytes(16)); // cryptographically secure
+
+        $payloadJson = json_encode([
+            'v'     => QR_VERSION,
+            'tid'   => $teacherId,
+            'gid'   => $groupId,
+            'cid'   => $classId,
+            'nonce' => $nonce,
+            'iat'   => $iat,
+            'exp'   => $exp,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+        $payloadPart = qr_base64url_encode($payloadJson);
+        $signature = hash_hmac('sha256', $payloadPart, $secret, true);
+        $token = $payloadPart . '.' . qr_base64url_encode($signature);
+
+        qr_no_store_headers();
+        Helper::sendJson([
+            'success'  => true,
+            'qr_token' => $token,
+            'iat'      => $iat,
+            'exp'      => $exp,
+            'ttl'      => QR_TTL_SECONDS,
+        ]);
+    } catch (Throwable $exception) {
+        // Correlate operational failures in server logs without logging payloads,
+        // signed tokens, database details, or the HMAC secret.
+        error_log('attendance.php QR generation failure (' . get_class($exception) . ')');
+        Helper::sendJson(['success' => false, 'message' => 'حدث خطأ غير متوقع'], 500);
     }
-    $classId = (int)$group['class_id'];
-
-    // Ownership: the derived class must belong to the same teacher
-    $stmtC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
-    $stmtC->execute(['cid' => $classId, 'tid' => $teacherId]);
-    if ($stmtC->fetch() === false) {
-        Helper::sendForbidden('Access denied');
-    }
-
-    // Signed payload (Unix timestamps — UTC-consistent)
-    $iat = time();
-    $exp = $iat + QR_TTL_SECONDS;
-    $nonce = bin2hex(random_bytes(16)); // cryptographically secure
-
-    $payloadJson = json_encode([
-        'v'     => QR_VERSION,
-        'tid'   => $teacherId,
-        'gid'   => $groupId,
-        'cid'   => $classId,
-        'nonce' => $nonce,
-        'iat'   => $iat,
-        'exp'   => $exp,
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-    $payloadPart = qr_base64url_encode($payloadJson);
-    $signature = hash_hmac('sha256', $payloadPart, $secret, true);
-    $token = $payloadPart . '.' . qr_base64url_encode($signature);
-
-    qr_no_store_headers();
-    Helper::sendJson([
-        'success'  => true,
-        'qr_token' => $token,
-        'iat'      => $iat,
-        'exp'      => $exp,
-        'ttl'      => QR_TTL_SECONDS,
-    ]);
 }
 
 /**

@@ -242,8 +242,10 @@ try {
     ]);
 
 } catch (Throwable $exception) {
+    // Keep actionable details in the server error log only.
+    error_log('parent.php dashboard failure (' . get_class($exception) . ')');
     Helper::sendJson([
         'success' => false,
-        'error' => 'خطأ في سيرفر لوحة ولي الأمر: ' . $exception->getMessage()
+        'message' => 'حدث خطأ غير متوقع'
     ], 500);
 }
