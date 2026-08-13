@@ -15,6 +15,7 @@ class TeacherController {
     // secret, or validity decision ever exists in JavaScript.
     this.qrState = { status: 'idle', token: '', exp: 0, groupId: '', message: '' };
     this._qrTimer = null;
+    this._qrPresentation = null;
 
     // P1-E: independent async data states for the Reports & Exams tabs
     this.reportsState = 'idle'; // idle | loading | ready | error
@@ -26,6 +27,10 @@ class TeacherController {
   }
 
   render() {
+    if (this.activeTab !== 'attendance' || this.attendanceMethod !== 'dynamic_qr') {
+      this.closeQrPresentation();
+    }
+
     const teacher = this.data.teacher || {};
     const overview = this.data.overview || {};
 
@@ -1023,11 +1028,16 @@ class TeacherController {
           <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
           <h3 style="font-size: 1.5rem; font-weight: 800; margin-top: 0.75rem;">اعرض هذا الكود على شاشة القاعة أو البروجيكتور</h3>
           <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.25rem;">الرمز موقّع من الخادم وتنتهي صلاحيته تلقائيًا خلال ثوانٍ</p>
-          <div class="dynamic-qr-box" id="dynamic-qr-graphic"${expired ? ' style="opacity: 0.25; filter: grayscale(1);"' : ''}></div>
+          <div class="dynamic-qr-box"${expired ? ' style="opacity: 0.25; filter: grayscale(1);"' : ''}>
+            <div class="dynamic-qr-graphic" id="dynamic-qr-graphic"></div>
+          </div>
           ${expired
-            ? '<p style="font-weight: 800; color: #fecaca;">انتهت صلاحية الرمز — جاري توليد رمز جديد...</p>'
-            : '<p style="font-family: monospace; font-size: 2rem; font-weight: 900; color: #a7f3d0;"><span id="qr-countdown">--</span> ث</p>'}
-          <button class="btn btn-secondary" id="btn-refresh-qr" style="margin-top: 0.75rem;">تجديد الرمز الآن</button>
+            ? '<p class="dynamic-qr-countdown dynamic-qr-countdown-expired">انتهت صلاحية الرمز — جاري توليد رمز جديد...</p>'
+            : '<p class="dynamic-qr-countdown">ينتهي خلال <span id="qr-countdown">--</span> ثانية</p>'}
+          <div class="dynamic-qr-controls">
+            <button class="btn btn-secondary" id="btn-refresh-qr">تجديد الرمز الآن</button>
+            ${expired ? '' : '<button class="btn btn-secondary" id="btn-enlarge-qr">تكبير QR</button>'}
+          </div>
         </div>
       `;
     }
@@ -1144,8 +1154,7 @@ class TeacherController {
   }
 
   /** P1-G: draw the REAL scannable QR from the signed token (vendored encoder) */
-  renderQrGraphic() {
-    const qrContainer = document.getElementById('dynamic-qr-graphic');
+  renderQrInto(qrContainer) {
     if (!qrContainer) return;
     if (this.qrState.status !== 'active' && this.qrState.status !== 'expired') return;
     if (typeof qrcode === 'undefined' || !this.qrState.token) return;
@@ -1157,6 +1166,76 @@ class TeacherController {
     } catch (e) {
       qrContainer.textContent = '';
     }
+  }
+
+  renderQrGraphic() {
+    this.renderQrInto(document.getElementById('dynamic-qr-graphic'));
+    if (this._qrPresentation) {
+      this.renderQrInto(this._qrPresentation.graphic);
+    }
+  }
+
+  /** Presentation-only view: reuses the active signed token and never requests one. */
+  openQrPresentation() {
+    if (this._qrPresentation || this.qrState.status !== 'active' || !this.qrState.token) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop dynamic-qr-presentation';
+    backdrop.dir = 'rtl';
+    const content = document.createElement('div');
+    content.className = 'modal-content dynamic-qr-presentation-content';
+    content.setAttribute('role', 'dialog');
+    content.setAttribute('aria-modal', 'true');
+    content.setAttribute('aria-label', 'تكبير رمز الحضور');
+
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    const title = document.createElement('h3');
+    title.className = 'modal-title';
+    title.textContent = 'رمز الحضور';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'modal-close';
+    closeButton.setAttribute('aria-label', 'إغلاق');
+    closeButton.textContent = '×';
+    header.append(title, closeButton);
+
+    const body = document.createElement('div');
+    body.className = 'modal-body dynamic-qr-presentation-body';
+    const graphic = document.createElement('div');
+    graphic.className = 'dynamic-qr-presentation-graphic';
+    const hint = document.createElement('p');
+    hint.className = 'dynamic-qr-presentation-hint';
+    hint.textContent = 'امسح الرمز بالكاميرا قبل انتهاء العد التنازلي';
+    const closeAction = document.createElement('button');
+    closeAction.type = 'button';
+    closeAction.className = 'btn btn-secondary';
+    closeAction.textContent = 'إغلاق';
+    body.append(graphic, hint, closeAction);
+    content.append(header, body);
+    backdrop.appendChild(content);
+    document.body.appendChild(backdrop);
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') this.closeQrPresentation();
+    };
+    this._qrPresentation = { backdrop, graphic, onKeyDown };
+    closeButton.addEventListener('click', () => this.closeQrPresentation());
+    closeAction.addEventListener('click', () => this.closeQrPresentation());
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) this.closeQrPresentation();
+    });
+    document.addEventListener('keydown', onKeyDown);
+    this.renderQrInto(graphic);
+    closeButton.focus();
+  }
+
+  closeQrPresentation() {
+    const presentation = this._qrPresentation;
+    if (!presentation) return;
+    document.removeEventListener('keydown', presentation.onKeyDown);
+    if (presentation.backdrop.parentNode) presentation.backdrop.parentNode.removeChild(presentation.backdrop);
+    this._qrPresentation = null;
   }
 
   attachEventListeners() {
@@ -1195,6 +1274,10 @@ class TeacherController {
     const btnRefreshQr = document.getElementById('btn-refresh-qr');
     if (btnRefreshQr) {
       btnRefreshQr.addEventListener('click', () => this.generateQr());
+    }
+    const btnEnlargeQr = document.getElementById('btn-enlarge-qr');
+    if (btnEnlargeQr) {
+      btnEnlargeQr.addEventListener('click', () => this.openQrPresentation());
     }
     const btnRetryQr = document.getElementById('btn-retry-qr');
     if (btnRetryQr) {

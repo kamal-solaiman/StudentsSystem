@@ -200,8 +200,10 @@ try {
     ]);
 
 } catch (Throwable $exception) {
+    // Keep actionable details in the server error log only.
+    error_log('student.php dashboard failure (' . get_class($exception) . ')');
     Helper::sendJson([
         'success' => false,
-        'error' => 'خطأ في سيرفر لوحة الطالب الموحدة: ' . $exception->getMessage()
+        'message' => 'حدث خطأ غير متوقع'
     ], 500);
 }

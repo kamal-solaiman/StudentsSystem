@@ -89,7 +89,9 @@ try {
     ]);
 
 } catch (Throwable $exception) {
-    // Don't expose internal errors in production
+    // Production-safe diagnostic: retain exception details only in the server log.
+    // Never return SQL, paths, or stack traces to the browser.
+    error_log('login.php authentication failure: ' . get_class($exception));
     Helper::sendJson([
         'success' => false,
         'message' => 'A system error occurred during login'
