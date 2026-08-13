@@ -29,10 +29,21 @@ class SuperAdminController {
           <td style="padding: 1rem;">${t.phone}</td>
           <td style="padding: 1rem; font-weight: 800; color: #4f46e5;">${t.active_students} طلاب</td>
           <td style="padding: 1rem; font-weight: 700;">${t.price_per_student} ج.م</td>
-          <td style="padding: 1rem; font-weight: 900; color: #059669;">${Number(t.subscription_monthly).toLocaleString()} ج.م</td>
+          <td style="padding: 1rem; font-weight: 900; color: #059669;">${Number(t.subscription_monthly || 0).toLocaleString()} ج.م</td>
         </tr>
       `;
     });
+
+    // P1-F: Empty state — never leave a silent empty table
+    if (teachers.length === 0) {
+      listHtml = `
+        <tr>
+          <td colspan="8" style="padding: 1.5rem; text-align: center; color: #64748b;">
+            لا يوجد مدرسون مسجلون في المنصة حاليًا
+          </td>
+        </tr>
+      `;
+    }
 
     this.container.innerHTML = `
       <!-- Super Admin Header -->
@@ -142,7 +153,21 @@ class SuperAdminController {
           alert('تم حفظ الإعدادات بنجاح في قاعدة البيانات');
           if (this.onRefresh) this.onRefresh();
         } catch (error) {
-          alert('حدث خطأ أثناء حفظ الإعدادات: ' + error.message);
+          // P1-F: status-aware safe message — never expose raw error.message
+          const status = error && error.status;
+          let saveErrorMsg;
+          if (status === 401) {
+            saveErrorMsg = 'انتهت جلسة تسجيل الدخول، يرجى تسجيل الدخول مرة أخرى';
+          } else if (status === 403) {
+            saveErrorMsg = 'ليس لديك صلاحية لتنفيذ هذا الإجراء';
+          } else if (status === 429) {
+            saveErrorMsg = 'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقًا';
+          } else if (!status) {
+            saveErrorMsg = 'تعذر الاتصال بالخادم، تحقق من اتصال الإنترنت وحاول مرة أخرى';
+          } else {
+            saveErrorMsg = 'حدث خطأ في الخادم، يرجى المحاولة لاحقًا';
+          }
+          alert('حدث خطأ أثناء حفظ الإعدادات: ' + saveErrorMsg);
         }
       });
     }

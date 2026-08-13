@@ -9,6 +9,20 @@ class TeacherController {
     this.activeTab = 'overview';
     this.examSubTab = 'questions';
     this.attendanceMethod = 'dynamic_qr';
+
+    // P1-G: dynamic QR broadcast screen state. The token is signed server-side;
+    // the frontend only displays it, counts down, and auto-refreshes. No HMAC,
+    // secret, or validity decision ever exists in JavaScript.
+    this.qrState = { status: 'idle', token: '', exp: 0, groupId: '', message: '' };
+    this._qrTimer = null;
+
+    // P1-E: independent async data states for the Reports & Exams tabs
+    this.reportsState = 'idle'; // idle | loading | ready | error
+    this.reportsData = null;
+    this.reportsError = null;
+    this.examsState = 'idle';   // idle | loading | ready | error
+    this.examsData = null;
+    this.examsError = null;
   }
 
   render() {
@@ -130,6 +144,11 @@ class TeacherController {
       `;
     });
 
+    // P1-F: Empty state (distinct from Loading / Error)
+    if ((this.data.classes || []).length === 0) {
+      listHtml = this.renderEmptyRow(5, 'لا توجد فصول دراسية حاليًا');
+    }
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
@@ -180,6 +199,11 @@ class TeacherController {
       `;
     });
 
+    // P1-F: Empty state (distinct from Loading / Error)
+    if ((this.data.groups || []).length === 0) {
+      listHtml = this.renderEmptyRow(8, 'لا توجد مجموعات دراسية حاليًا');
+    }
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
@@ -227,6 +251,11 @@ class TeacherController {
         </tr>
       `;
     });
+
+    // P1-F: Empty state (distinct from Loading / Error)
+    if ((this.data.students || []).length === 0) {
+      listHtml = this.renderEmptyRow(7, 'لا يوجد طلاب حاليًا');
+    }
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
@@ -279,16 +308,8 @@ class TeacherController {
           </div>
         </div>
 
-        <!-- Method 1: Dynamic QR screen -->
-        ${this.attendanceMethod === 'dynamic_qr' ? `
-          <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
-            <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
-            <h3 style="font-size: 1.5rem; font-weight: 800; margin-top: 0.75rem;">اعرض هذا الكود على شاشة القاعة أو البروجيكتور</h3>
-            <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.25rem;">يتغير الكود تلقائياً لضمان حضور الطالب داخل القاعة</p>
-            <div class="dynamic-qr-box" id="dynamic-qr-graphic"></div>
-            <p style="font-family: monospace; font-size: 1rem; font-weight: 700; color: #a7f3d0;">TOKEN: DYN-QR-992384-AUTO</p>
-          </div>
-        ` : ''}
+        <!-- Method 1: Dynamic QR screen (P1-G: server-signed 45s broadcast QR) -->
+        ${this.attendanceMethod === 'dynamic_qr' ? this.renderDynamicQrScreen() : ''}
 
         <!-- Method 2: Scanner input -->
         ${this.attendanceMethod === 'id_scanner' ? `
@@ -319,7 +340,9 @@ class TeacherController {
                   </tr>
                 </thead>
                 <tbody>
-                  ${(this.data.students || []).map(st => `
+                  ${(this.data.students || []).length === 0
+                    ? this.renderEmptyRow(4, 'لا يوجد طلاب حاليًا لتسجيل الحضور')
+                    : (this.data.students || []).map(st => `
                     <tr>
                       <td style="font-family: monospace; font-weight: 800; color: #059669;">${st.student_code}</td>
                       <td style="font-weight: 800;">${st.name}</td>
@@ -338,9 +361,82 @@ class TeacherController {
     `;
   }
 
+  /* ================================================================
+   * P1-E: Shared tab helpers (loading / error / empty states)
+   * Error titles are status-aware (401/403/404/500/network) so the UI
+   * never mislabels an authorization failure as a connectivity problem.
+   * ================================================================ */
+
+  renderTabLoading(message) {
+    return `
+      <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 3rem 2rem; text-align: center;">
+        <div style="width: 3rem; height: 3rem; border: 4px solid #e2e8f0; border-top-color: #059669; border-radius: 9999px; margin: 0 auto; animation: spin 1s linear infinite;"></div>
+        <p style="margin-top: 1rem; color: #64748b; font-size: 0.9rem;">${message}</p>
+      </div>
+    `;
+  }
+
+  describeApiError(error) {
+    const status = error && error.status;
+    if (status === 401) return { title: 'انتهت الجلسة', message: 'يرجى تسجيل الدخول مجددًا للمتابعة.' };
+    if (status === 403) return { title: 'غير مصرح بهذا الإجراء', message: 'لا تملك صلاحية الوصول إلى هذه البيانات.' };
+    if (status === 404) return { title: 'البيانات غير موجودة', message: 'المورد المطلوب غير موجود.' };
+    if (status === 429) return { title: 'محاولات كثيرة', message: 'يرجى الانتظار قليلًا ثم المحاولة مجددًا.' };
+    if (status && status >= 500) return { title: 'خطأ في الخادم', message: 'حدث خطأ أثناء معالجة الطلب — حاول مرة أخرى لاحقًا.' };
+    if (!status) return { title: 'تعذر الاتصال بالخادم', message: 'تحقق من اتصالك بالإنترنت ثم حاول مجددًا.' };
+    return { title: 'حدث خطأ', message: 'خطأ غير متوقع — حاول مرة أخرى.' };
+  }
+
+  renderTabError(tab, error) {
+    const info = this.describeApiError(error);
+    const loginBtn = error && error.status === 401
+      ? '<button class="btn btn-secondary" data-action="goto-login">تسجيل الدخول</button>'
+      : '';
+    return `
+      <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 2.5rem 2rem; text-align: center;">
+        <h3 style="color: #9f1239; font-weight: 800; font-size: 1.15rem;">${info.title}</h3>
+        <p style="color: #64748b; font-size: 0.85rem; margin-top: 0.5rem;">${info.message}</p>
+        <div style="display: flex; gap: 0.75rem; justify-content: center; margin-top: 1.25rem;">
+          <button class="btn btn-primary" data-action="retry-tab" data-tab="${tab}">إعادة المحاولة</button>
+          ${loginBtn}
+        </div>
+      </div>
+    `;
+  }
+
+  /** P1-E/F: shared empty-state table row (distinct from Loading and Error) */
+  renderEmptyRow(colspan, message) {
+    const text = message || 'لا توجد بيانات متاحة حاليًا';
+    return `<tr><td colspan="${colspan}" style="padding: 1.5rem; text-align: center; color: #64748b;">${text}</td></tr>`;
+  }
+
+  /** P1-F: shared empty-state block for card grids */
+  renderEmptyText(message) {
+    return `<p style="color: #64748b; text-align: center; padding: 1.5rem; font-size: 0.9rem;">${message}</p>`;
+  }
+
+  /* ================================================================
+   * P1-E: Exams tab — REAL data from api/exams.php (GET), with
+   * loading / empty / error states. Tenant scoping + ownership checks
+   * remain enforced server-side (session tenant + P1-B).
+   * ================================================================ */
+
   renderExams() {
+    if (this.examsState !== 'ready' || !this.examsData) {
+      if (this.examsState === 'error') {
+        return this.renderTabError('exams', this.examsError);
+      }
+      if (this.examsState !== 'loading') {
+        this.loadExamsData();
+      }
+      return this.renderTabLoading('جاري تحميل الامتحانات وبنك الأسئلة...');
+    }
+
+    const questions = this.examsData.questions;
+    const exams = this.examsData.exams;
+
     let qList = '';
-    (this.data.questions || []).forEach((q, idx) => {
+    questions.forEach((q, idx) => {
       qList += `
         <tr style="border-bottom: 1px solid #e2e8f0;">
           <td style="padding: 1rem;">${idx + 1}</td>
@@ -356,6 +452,30 @@ class TeacherController {
         </tr>
       `;
     });
+    if (questions.length === 0) {
+      qList = this.renderEmptyRow(6, 'لا توجد أسئلة في البنك حاليًا');
+    }
+
+    let exList = '';
+    exams.forEach(e => {
+      exList += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-weight: 800;">${e.title}</td>
+          <td style="padding: 1rem;">${e.date} (${e.time})</td>
+          <td style="padding: 1rem;">${e.duration_minutes} دقيقة</td>
+          <td style="padding: 1rem;">
+            <span style="background: #e0e7ff; color: #4f46e5; padding: 0.25rem 0.65rem; border-radius: 0.5rem; font-size: 0.75rem; font-weight: 700;">
+              ${e.exam_type === 'quiz' ? 'اختبار سريع' : (e.exam_type === 'monthly' ? 'شهري' : (e.exam_type === 'midterm' ? 'نصف الفصل' : 'نهائي'))}
+            </span>
+          </td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${e.total_points} نقطة</td>
+          <td style="padding: 1rem;">${Number(e.is_published) === 1 ? 'منشور' : 'مسودة'}</td>
+        </tr>
+      `;
+    });
+    if (exams.length === 0) {
+      exList = this.renderEmptyRow(6, 'لا توجد امتحانات حاليًا');
+    }
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
@@ -382,33 +502,417 @@ class TeacherController {
           </table>
         </div>
       </div>
-    `;
-  }
 
-  renderReports() {
-    return `
-      <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 2rem;">
-        <h3 style="font-weight: 800; font-size: 1.25rem;">التقارير التفصيلية الشاملة (7 تقارير بيانية)</h3>
-        <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.35rem;">تقارير تشمل: الطلاب، الحضور والغياب، الامتحانات، الدرجات، المدفوعات، المجموعات، والصفوف.</p>
-        <div class="grid-3" style="margin-top: 1.5rem;">
-          <div class="stat-card">
-            <span class="stat-card-title">1. تقرير الطلاب</span>
-            <div class="stat-card-value">${(this.data.students || []).length} طلاب</div>
-            <div class="stat-card-desc">مسجلون في المجموعات</div>
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header">
+          <div>
+            <h3 style="font-weight: 800; font-size: 1.15rem;">الامتحانات</h3>
+            <p style="font-size: 0.8rem; color: #64748b;">الامتحانات المنشورة لطلاب مجموعاتك</p>
           </div>
-          <div class="stat-card">
-            <span class="stat-card-title">2. تقرير الحضور والغياب</span>
-            <div class="stat-card-value">${this.data.overview?.today_attendance || 1} حضور</div>
-            <div class="stat-card-desc">إحصاءات الحضور والتأخير</div>
-          </div>
-          <div class="stat-card">
-            <span class="stat-card-title">5. تقرير المدفوعات والاشتراكات</span>
-            <div class="stat-card-value">${Number(this.data.overview?.subscription_monthly || 0).toLocaleString()} ج.م</div>
-            <div class="stat-card-desc">عوائد المدرس الشهرية</div>
-          </div>
+          <button class="btn btn-primary" id="open-exam-modal">+ إنشاء امتحان</button>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>عنوان الامتحان</th>
+                <th>التاريخ والوقت</th>
+                <th>المدة</th>
+                <th>النوع</th>
+                <th>الدرجة الكلية</th>
+                <th>الحالة</th>
+              </tr>
+            </thead>
+            <tbody>${exList}</tbody>
+          </table>
         </div>
       </div>
     `;
+  }
+
+  /** P1-E: Fetch exams + question bank for the authenticated teacher's tenant */
+  async loadExamsData() {
+    if (this.examsState === 'loading') return;
+    this.examsState = 'loading';
+    this.examsError = null;
+    if (this.activeTab === 'exams') this.render();
+
+    try {
+      const data = await ApiClient.getExamsData();
+      this.examsData = {
+        questions: Array.isArray(data.questions) ? data.questions : [],
+        exams: Array.isArray(data.exams) ? data.exams : []
+      };
+      this.examsState = 'ready';
+    } catch (error) {
+      this.examsState = 'error';
+      this.examsError = error;
+    }
+
+    if (this.activeTab === 'exams') this.render();
+  }
+
+  /** P1-E: Create-question modal — uses the EXISTING exams.php create_question action */
+  openQuestionModal() {
+    const teacher = this.data.teacher || {};
+    const classes = this.data.classes || [];
+
+    AppModal.open({
+      title: 'إضافة سؤال جديد إلى بنك الأسئلة',
+      description: 'سيُحفظ السؤال داخل مساحة المدرس الحالية فقط (عزل المستأجرين مفروض من الخادم).',
+      fields: [
+        { name: 'subject', label: 'الموضوع', type: 'text', required: true, value: teacher.subject || '', placeholder: 'مثال: الفصل الأول — التيار الكهربي' },
+        {
+          name: 'question_type', label: 'نوع السؤال', type: 'select', required: true, value: 'mcq',
+          options: [
+            { value: 'mcq', label: 'اختيار من متعدد (MCQ)' },
+            { value: 'true_false', label: 'صح وخطأ' },
+            { value: 'essay', label: 'سؤال مقالي' },
+            { value: 'bubble_sheet', label: 'Bubble Sheet' }
+          ]
+        },
+        {
+          name: 'class_id', label: 'الصف الدراسي', type: 'select', required: true,
+          value: classes.length ? classes[0].id : '',
+          options: classes.map(c => ({ value: c.id, label: c.name }))
+        },
+        { name: 'question_text', label: 'نص السؤال', type: 'textarea', required: true, rows: 3 },
+        { name: 'options', label: 'الاختيارات (مفصولة بفاصلة — لـ MCQ / Bubble Sheet)', type: 'textarea', rows: 2, placeholder: 'أ: الخيار الأول، ب: الخيار الثاني، ...' },
+        { name: 'correct_option', label: 'الإجابة الصحيحة', type: 'text', placeholder: 'الاختيار الصحيح أو الإجابة النموذجية' },
+        { name: 'points', label: 'الدرجة', type: 'number', required: true, min: 0.5, value: 2 }
+      ],
+      submitLabel: 'حفظ السؤال',
+      onSubmit: async (values) => {
+        const optionsList = String(values.options || '')
+          .split(/[،,]/)
+          .map(s => s.trim())
+          .filter(Boolean);
+
+        await ApiClient.createQuestion({
+          action: 'create_question',
+          payload: {
+            class_id: Number(values.class_id),
+            subject: values.subject,
+            question_type: values.question_type,
+            question_text: values.question_text,
+            options: optionsList,
+            correct_option: values.correct_option || '',
+            points: Number(values.points)
+          }
+        });
+        await this.loadExamsData();
+      }
+    });
+  }
+
+  /** P1-E: Create-exam modal — uses the EXISTING exams.php create_exam action */
+  openExamModal() {
+    const classes = this.data.classes || [];
+    const groups = this.data.groups || [];
+    const questions = (this.examsData && this.examsData.questions) || [];
+
+    AppModal.open({
+      title: 'إنشاء امتحان جديد',
+      description: 'سيُنشأ الامتحان منشورًا لطلابك، مع إمكانية ربط أسئلة من بنك أسئلتك فقط.',
+      fields: [
+        { name: 'title', label: 'عنوان الامتحان', type: 'text', required: true },
+        {
+          name: 'class_id', label: 'الصف الدراسي', type: 'select', required: true,
+          value: classes.length ? classes[0].id : '',
+          options: classes.map(c => ({ value: c.id, label: c.name }))
+        },
+        {
+          name: 'group_id', label: 'المجموعة (اختياري)', type: 'select', value: '',
+          options: [{ value: '', label: 'عام — بدون مجموعة محددة' }]
+            .concat(groups.map(g => ({ value: g.id, label: g.name })))
+        },
+        { name: 'date', label: 'تاريخ الامتحان', type: 'date', required: true, value: new Date().toISOString().slice(0, 10) },
+        { name: 'time', label: 'وقت الامتحان', type: 'text', required: true, value: '05:00 مساءً' },
+        { name: 'duration_minutes', label: 'المدة بالدقائق', type: 'number', required: true, min: 5, value: 60 },
+        {
+          name: 'exam_type', label: 'نوع الامتحان', type: 'select', required: true, value: 'monthly',
+          options: [
+            { value: 'quiz', label: 'اختبار سريع' },
+            { value: 'monthly', label: 'شهري' },
+            { value: 'midterm', label: 'نصف الفصل' },
+            { value: 'final', label: 'نهائي' }
+          ]
+        },
+        { name: 'total_points', label: 'الدرجة الكلية', type: 'number', required: true, min: 1, value: 100 },
+        {
+          name: 'question_ids', label: 'أسئلة الامتحان (من بنك أسئلتك)', type: 'checklist',
+          options: questions.map(q => ({
+            value: q.id,
+            label: `#${q.id} — ${q.subject} — ${String(q.question_text).slice(0, 60)}`
+          })),
+          emptyText: 'لا توجد أسئلة في البنك بعد — أضف أسئلة أولًا ثم أنشئ الامتحان'
+        }
+      ],
+      submitLabel: 'إنشاء الامتحان',
+      onSubmit: async (values) => {
+        await ApiClient.createExam({
+          action: 'create_exam',
+          payload: {
+            title: values.title,
+            class_id: Number(values.class_id),
+            group_id: values.group_id === '' ? null : Number(values.group_id),
+            date: values.date,
+            time: values.time,
+            duration_minutes: Number(values.duration_minutes),
+            exam_type: values.exam_type,
+            total_points: Number(values.total_points),
+            question_ids: (values.question_ids || []).map(Number)
+          }
+        });
+        await this.loadExamsData();
+      }
+    });
+  }
+
+  /* ================================================================
+   * P1-E: Reports tab — REAL data from api/reports.php (GET), with
+   * loading / empty / error states. All seven reports are scoped to the
+   * session tenant server-side; staff still needs the 'reports' permission.
+   * ================================================================ */
+
+  renderReports() {
+    if (this.reportsState !== 'ready' || !this.reportsData) {
+      if (this.reportsState === 'error') {
+        return this.renderTabError('reports', this.reportsError);
+      }
+      if (this.reportsState !== 'loading') {
+        this.loadReportsData();
+      }
+      return this.renderTabLoading('جاري تحميل التقارير السبعة...');
+    }
+
+    const r = this.reportsData;
+    const att = r.attendance || {};
+    const summary = att.summary || {};
+
+    const paymentLabel = (s) => (s === 'paid' ? 'مدفوع' : (s === 'pending' ? 'قيد الانتظار' : 'متأخر'));
+    const attLabel = (s) => (s === 'present' ? 'حاضر' : (s === 'late' ? 'متأخر' : 'غائب'));
+
+    /* 1. Students report */
+    let studentsRows = '';
+    (r.students || []).forEach(s => {
+      studentsRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-family: monospace; font-weight: 800; color: #059669;">${s.student_code}</td>
+          <td style="padding: 1rem; font-weight: 800;">${s.name}</td>
+          <td style="padding: 1rem;">${s.grade_level}</td>
+          <td style="padding: 1rem;">${s.group_name || '—'}</td>
+          <td style="padding: 1rem;">${s.enrollment_date}</td>
+          <td style="padding: 1rem;"><span class="badge badge-emerald" style="background: ${s.payment_status === 'paid' ? '#d1fae5' : '#fee2e2'}; color: ${s.payment_status === 'paid' ? '#065f46' : '#991b1b'};">${paymentLabel(s.payment_status)}</span></td>
+        </tr>
+      `;
+    });
+    if ((r.students || []).length === 0) studentsRows = this.renderEmptyRow(6);
+
+    /* 2. Attendance records */
+    let attRows = '';
+    (att.records || []).forEach(a => {
+      attRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-family: monospace;">${a.date}</td>
+          <td style="padding: 1rem; font-weight: 800;">${a.student_name}</td>
+          <td style="padding: 1rem;">${a.group_name || '—'}</td>
+          <td style="padding: 1rem;"><span class="badge badge-emerald" style="background: ${a.status === 'absent' ? '#fee2e2' : '#d1fae5'}; color: ${a.status === 'absent' ? '#991b1b' : '#065f46'};">${attLabel(a.status)}</span></td>
+          <td style="padding: 1rem;">${a.arrival_time || '—'}</td>
+          <td style="padding: 1rem;">${a.late_minutes || 0} دقيقة</td>
+        </tr>
+      `;
+    });
+    if ((att.records || []).length === 0) attRows = this.renderEmptyRow(6);
+
+    /* 3. Exams report */
+    let examsRows = '';
+    (r.exams || []).forEach(e => {
+      examsRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-weight: 800;">${e.title}</td>
+          <td style="padding: 1rem;">${e.date} (${e.time})</td>
+          <td style="padding: 1rem;">${e.exam_type}</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${e.total_points} نقطة</td>
+          <td style="padding: 1rem;">${e.total_questions || 0} أسئلة</td>
+        </tr>
+      `;
+    });
+    if ((r.exams || []).length === 0) examsRows = this.renderEmptyRow(5);
+
+    /* 4. Grades report */
+    let gradesRows = '';
+    (r.grades || []).forEach(g => {
+      gradesRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-weight: 800;">${g.student_name}</td>
+          <td style="padding: 1rem;">${g.exam_title}</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${g.score} / ${g.max_score}</td>
+          <td style="padding: 1rem;">${g.status}</td>
+          <td style="padding: 1rem;">${g.submitted_at}</td>
+        </tr>
+      `;
+    });
+    if ((r.grades || []).length === 0) gradesRows = this.renderEmptyRow(5);
+
+    /* 5. Payments report */
+    let paymentsRows = '';
+    (r.payments || []).forEach(p => {
+      paymentsRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem;"><span class="badge badge-emerald" style="background: ${p.payment_status === 'paid' ? '#d1fae5' : '#fee2e2'}; color: ${p.payment_status === 'paid' ? '#065f46' : '#991b1b'};">${paymentLabel(p.payment_status)}</span></td>
+          <td style="padding: 1rem;">${p.payment_scheme === 'monthly' ? 'شهري' : 'بالحصة'}</td>
+          <td style="padding: 1rem; font-weight: 800;">${p.price} ج.م</td>
+          <td style="padding: 1rem;">${p.students_count} طلاب</td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${Number(p.total_expected_revenue || 0).toLocaleString()} ج.م</td>
+        </tr>
+      `;
+    });
+    if ((r.payments || []).length === 0) paymentsRows = this.renderEmptyRow(5);
+
+    /* 6. Groups report */
+    let groupsRows = '';
+    (r.groups || []).forEach(g => {
+      groupsRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-weight: 800;">${g.name}</td>
+          <td style="padding: 1rem;">${g.class_name || 'عام'}</td>
+          <td style="padding: 1rem; font-weight: 800;">${g.price} ج.م (${g.payment_scheme === 'monthly' ? 'شهري' : 'بالحصة'})</td>
+          <td style="padding: 1rem;">${g.enrolled_students || 0} طلاب</td>
+        </tr>
+      `;
+    });
+    if ((r.groups || []).length === 0) groupsRows = this.renderEmptyRow(4);
+
+    /* 7. Classes report */
+    let classesRows = '';
+    (r.classes || []).forEach(c => {
+      classesRows += `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 1rem; font-weight: 800;">${c.name}</td>
+          <td style="padding: 1rem;">${c.level}</td>
+          <td style="padding: 1rem;">${c.groups_count || 0} مجموعات</td>
+          <td style="padding: 1rem;">${c.total_students || 0} طلاب</td>
+        </tr>
+      `;
+    });
+    if ((r.classes || []).length === 0) classesRows = this.renderEmptyRow(4);
+
+    return `
+      <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 2rem;">
+        <h3 style="font-weight: 800; font-size: 1.25rem;">التقارير التفصيلية الشاملة (7 تقارير)</h3>
+        <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.35rem;">تقارير تشمل: الطلاب، الحضور والغياب، الامتحانات، الدرجات، المدفوعات، المجموعات، والصفوف.</p>
+
+        <div class="grid-4" style="margin-top: 1.5rem;">
+          <div class="stat-card">
+            <span class="stat-card-title">حضور</span>
+            <div class="stat-card-value" style="color: #059669;">${summary.present_count || 0}</div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-title">تأخير</span>
+            <div class="stat-card-value" style="color: #d97706;">${summary.late_count || 0}</div>
+            <div class="stat-card-desc">${summary.total_late_minutes || 0} دقيقة تأخير</div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-title">غياب</span>
+            <div class="stat-card-value" style="color: #e11d48;">${summary.absent_count || 0}</div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card-title">إجمالي الطلاب</span>
+            <div class="stat-card-value">${(r.students || []).length}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">1. تقرير الطلاب</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>الكود</th><th>الاسم</th><th>الصف</th><th>المجموعة</th><th>تاريخ التسجيل</th><th>حالة الدفع</th></tr></thead>
+            <tbody>${studentsRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">2. تقرير الحضور والغياب</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>التاريخ</th><th>الطالب</th><th>المجموعة</th><th>الحالة</th><th>وقت الحضور</th><th>التأخير</th></tr></thead>
+            <tbody>${attRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">3. تقرير الامتحانات</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>الامتحان</th><th>التاريخ والوقت</th><th>النوع</th><th>الدرجة</th><th>الأسئلة</th></tr></thead>
+            <tbody>${examsRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">4. تقرير الدرجات</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>الطالب</th><th>الامتحان</th><th>الدرجة</th><th>الحالة</th><th>تاريخ التسجيل</th></tr></thead>
+            <tbody>${gradesRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">5. تقرير المدفوعات والاشتراكات</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>حالة الدفع</th><th>النظام</th><th>السعر</th><th>عدد الطلاب</th><th>الإيراد المتوقع</th></tr></thead>
+            <tbody>${paymentsRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">6. تقرير المجموعات</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>المجموعة</th><th>الصف</th><th>السعر</th><th>الطلاب المسجلون</th></tr></thead>
+            <tbody>${groupsRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card-table-wrapper" style="margin-top: 1.5rem;">
+        <div class="card-header"><h3 style="font-weight: 800; font-size: 1.05rem;">7. تقرير الصفوف</h3></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>الصف</th><th>المرحلة</th><th>المجموعات</th><th>الطلاب</th></tr></thead>
+            <tbody>${classesRows}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  /** P1-E: Fetch the seven reports for the authenticated teacher's tenant */
+  async loadReportsData() {
+    if (this.reportsState === 'loading') return;
+    this.reportsState = 'loading';
+    this.reportsError = null;
+    if (this.activeTab === 'reports') this.render();
+
+    try {
+      const data = await ApiClient.getReportsData();
+      this.reportsData = data && data.reports ? data.reports : {};
+      this.reportsState = 'ready';
+    } catch (error) {
+      this.reportsState = 'error';
+      this.reportsError = error;
+    }
+
+    if (this.activeTab === 'reports') this.render();
   }
 
   renderStaff() {
@@ -424,14 +928,23 @@ class TeacherController {
       `;
     });
 
+    // P1-F: Empty state (distinct from Loading / Error)
+    if ((this.data.staff || []).length === 0) {
+      listHtml = this.renderEmptyRow(4, 'لا يوجد موظفون (سكرتير / مساعد) حاليًا');
+    }
+
+    // P1-F: The "إضافة سكرتير / مساعد" button is intentionally NOT rendered:
+    // no backend endpoint/capability exists for staff creation, so the button
+    // is hidden instead of offering an action that cannot work. This is a UX
+    // decision only — backend authorization remains the source of truth.
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
           <div>
             <h3 style="font-weight: 800; font-size: 1.15rem;">المستخدمون والعاملون مع المدرس (Staff)</h3>
-            <p style="font-size: 0.8rem; color: #64748b;">إنشاء حسابات للسكرتارية والمساعدين مع تخصيص صلاحيات محددة</p>
+            <p style="font-size: 0.8rem; color: #64748b;">عرض حسابات السكرتارية والمساعدين وصلاحياتهم</p>
           </div>
-          <button class="btn btn-primary" id="open-staff-modal">+ إضافة سكرتير / مساعد</button>
         </div>
         <div class="table-responsive">
           <table>
@@ -483,6 +996,155 @@ class TeacherController {
     `;
   }
 
+  /* ================================================================
+   * P1-G: Dynamic QR broadcast screen — the token is signed server-side
+   * (HMAC-SHA256, 45s TTL). The frontend only displays, counts down and
+   * auto-refreshes. It never computes HMAC, never sees the secret, and
+   * never decides whether a QR is valid.
+   * ================================================================ */
+
+  renderDynamicQrScreen() {
+    const st = this.qrState;
+    const groups = this.data.groups || [];
+
+    if (st.status === 'loading') {
+      return `
+        <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
+          <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
+          <p style="margin-top: 1rem; font-size: 0.9rem; color: #a7f3d0;">جاري توليد رمز الحضور...</p>
+        </div>
+      `;
+    }
+
+    if (st.status === 'active' || st.status === 'expired') {
+      const expired = st.status === 'expired';
+      return `
+        <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
+          <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
+          <h3 style="font-size: 1.5rem; font-weight: 800; margin-top: 0.75rem;">اعرض هذا الكود على شاشة القاعة أو البروجيكتور</h3>
+          <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.25rem;">الرمز موقّع من الخادم وتنتهي صلاحيته تلقائيًا خلال ثوانٍ</p>
+          <div class="dynamic-qr-box" id="dynamic-qr-graphic"${expired ? ' style="opacity: 0.25; filter: grayscale(1);"' : ''}></div>
+          ${expired
+            ? '<p style="font-weight: 800; color: #fecaca;">انتهت صلاحية الرمز — جاري توليد رمز جديد...</p>'
+            : '<p style="font-family: monospace; font-size: 2rem; font-weight: 900; color: #a7f3d0;"><span id="qr-countdown">--</span> ث</p>'}
+          <button class="btn btn-secondary" id="btn-refresh-qr" style="margin-top: 0.75rem;">تجديد الرمز الآن</button>
+        </div>
+      `;
+    }
+
+    if (st.status === 'error') {
+      return `
+        <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
+          <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
+          <p style="margin-top: 1rem; font-size: 0.9rem; color: #fecaca;">${st.message || 'تعذر توليد رمز الحضور'}</p>
+          <button class="btn btn-secondary" id="btn-retry-qr" style="margin-top: 0.75rem;">إعادة المحاولة</button>
+        </div>
+      `;
+    }
+
+    // idle: choose one of the teacher's OWN groups, then generate
+    if (groups.length === 0) {
+      return `
+        <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
+          <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
+          <p style="margin-top: 1rem; font-size: 0.9rem; color: #a7f3d0;">لا توجد مجموعات دراسية — أضف مجموعة أولاً من تبويب المجموعات</p>
+        </div>
+      `;
+    }
+
+    const selected = st.groupId || groups[0].id;
+    return `
+      <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
+        <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
+        <h3 style="font-size: 1.35rem; font-weight: 800; margin-top: 0.75rem;">اختر المجموعة ثم ولّد رمز الحضور</h3>
+        <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.25rem;">الرمز موقّع من الخادم (HMAC) وصلاحية كل رمز 45 ثانية فقط</p>
+        <div style="max-width: 420px; margin: 1.25rem auto 0;">
+          <select id="qr-group-select" class="form-control">
+            ${groups.map(g => `<option value="${g.id}" ${String(g.id) === String(selected) ? 'selected' : ''}>${g.name} — ${g.class_name || 'عام'}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary" id="btn-generate-qr" style="margin-top: 0.75rem; width: 100%;">توليد رمز الحضور</button>
+        </div>
+      </div>
+    `;
+  }
+
+  /** P1-G: request a signed broadcast QR from the backend (client never signs) */
+  async generateQr() {
+    if (this.qrState.status === 'loading') return; // double-click guard
+    const groups = this.data.groups || [];
+    const groupId = this.qrState.groupId || (groups.length ? groups[0].id : null);
+    if (!groupId) return;
+
+    this.qrState.status = 'loading';
+    this.qrState.message = '';
+    if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
+
+    try {
+      const data = await ApiClient.generateAttendanceQr(groupId);
+      this.qrState = {
+        status: 'active',
+        token: data.qr_token || '',
+        exp: Number(data.exp || 0),
+        groupId: String(groupId),
+        message: ''
+      };
+    } catch (error) {
+      this.qrState.status = 'error';
+      this.qrState.message = this.describeApiError(error).message;
+    }
+
+    if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
+  }
+
+  /** P1-G: countdown from the server `exp` + auto-renew while the screen is open */
+  startQrCountdown() {
+    if (this._qrTimer) {
+      clearInterval(this._qrTimer);
+      this._qrTimer = null;
+    }
+    if (this.qrState.status !== 'active') return;
+
+    const tick = () => {
+      const el = document.getElementById('qr-countdown');
+      if (!el) { // screen closed / tab changed — stop the timer
+        clearInterval(this._qrTimer);
+        this._qrTimer = null;
+        return;
+      }
+      const remaining = this.qrState.exp - Math.floor(Date.now() / 1000);
+      if (remaining <= 0) {
+        clearInterval(this._qrTimer);
+        this._qrTimer = null;
+        this.qrState.status = 'expired';
+        if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') {
+          this.render();
+          this.generateQr(); // auto-generate a fresh QR while the screen is open
+        }
+        return;
+      }
+      el.textContent = String(remaining);
+    };
+
+    this._qrTimer = setInterval(tick, 1000);
+    tick();
+  }
+
+  /** P1-G: draw the REAL scannable QR from the signed token (vendored encoder) */
+  renderQrGraphic() {
+    const qrContainer = document.getElementById('dynamic-qr-graphic');
+    if (!qrContainer) return;
+    if (this.qrState.status !== 'active' && this.qrState.status !== 'expired') return;
+    if (typeof qrcode === 'undefined' || !this.qrState.token) return;
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(this.qrState.token);
+      qr.make();
+      qrContainer.innerHTML = qr.createSvgTag(5, 2);
+    } catch (e) {
+      qrContainer.textContent = '';
+    }
+  }
+
   attachEventListeners() {
     // Tabs switching via Router
     this.container.querySelectorAll('.tab-btn').forEach(btn => {
@@ -505,11 +1167,27 @@ class TeacherController {
       });
     });
 
-    // Render Dynamic QR SVG if present
-    const qrContainer = document.getElementById('dynamic-qr-graphic');
-    if (qrContainer && typeof QrSvgGenerator !== 'undefined') {
-      qrContainer.innerHTML = QrSvgGenerator.renderSvg('DYNAMIC-QR-SCREEN-TOKEN', 220);
+    // P1-G: dynamic QR screen wiring (generate / refresh / retry / countdown)
+    const qrGroupSelect = document.getElementById('qr-group-select');
+    if (qrGroupSelect) {
+      qrGroupSelect.addEventListener('change', (e) => {
+        this.qrState.groupId = e.target.value;
+      });
     }
+    const btnGenerateQr = document.getElementById('btn-generate-qr');
+    if (btnGenerateQr) {
+      btnGenerateQr.addEventListener('click', () => this.generateQr());
+    }
+    const btnRefreshQr = document.getElementById('btn-refresh-qr');
+    if (btnRefreshQr) {
+      btnRefreshQr.addEventListener('click', () => this.generateQr());
+    }
+    const btnRetryQr = document.getElementById('btn-retry-qr');
+    if (btnRetryQr) {
+      btnRetryQr.addEventListener('click', () => this.generateQr());
+    }
+    this.renderQrGraphic();
+    this.startQrCountdown();
 
     // Modal triggers and actions
     const btnScan = document.getElementById('btn-submit-scan');
@@ -518,6 +1196,31 @@ class TeacherController {
         const inputCode = document.getElementById('scanner-input-code')?.value || 'STU-10045';
         alert(`تم تسجيل الحضور بنجاح للطالب ذو الكود: ${inputCode}`);
       });
+    }
+
+    // P1-E: Reports / Exams error panels — retry & login redirect
+    this.container.querySelectorAll('[data-action="retry-tab"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.getAttribute('data-tab');
+        if (tab === 'reports') this.loadReportsData();
+        else if (tab === 'exams') this.loadExamsData();
+      });
+    });
+    const gotoLoginBtn = this.container.querySelector('[data-action="goto-login"]');
+    if (gotoLoginBtn) {
+      gotoLoginBtn.addEventListener('click', () => {
+        if (window.router) window.router.navigate('/login');
+      });
+    }
+
+    // P1-E: Question bank & exam creation modals (existing exams.php actions)
+    const btnQbModal = document.getElementById('open-qb-modal');
+    if (btnQbModal) {
+      btnQbModal.addEventListener('click', () => this.openQuestionModal());
+    }
+    const btnExamModal = document.getElementById('open-exam-modal');
+    if (btnExamModal) {
+      btnExamModal.addEventListener('click', () => this.openExamModal());
     }
   }
 }

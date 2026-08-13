@@ -346,16 +346,65 @@ class AppController {
     `;
   }
 
+  /**
+   * P1-F: Status-aware error description.
+   * Maps each failure class to a safe Arabic message. Raw error.message is
+   * NEVER shown, so PHP exception text / SQL errors / stack traces cannot
+   * reach the UI. Status comes from ApiClient (error.status); fetch-level
+   * failures carry no status and are treated as network errors.
+   */
+  describeDashboardError(error) {
+    const status = error && error.status;
+    if (status === 401) {
+      return {
+        title: 'انتهت الجلسة',
+        message: 'انتهت جلسة تسجيل الدخول، يرجى تسجيل الدخول مرة أخرى',
+        showLogin: true
+      };
+    }
+    if (status === 403) {
+      return { title: 'صلاحية مرفوضة', message: 'ليس لديك صلاحية لتنفيذ هذا الإجراء' };
+    }
+    if (status === 404) {
+      return { title: 'المحتوى غير موجود', message: 'المحتوى المطلوب غير موجود' };
+    }
+    if (status === 429) {
+      return { title: 'محاولات كثيرة', message: 'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقًا' };
+    }
+    if (status && status >= 500) {
+      return { title: 'خطأ في الخادم', message: 'حدث خطأ في الخادم، يرجى المحاولة لاحقًا' };
+    }
+    if (!status) {
+      return { title: 'تعذر الاتصال', message: 'تعذر الاتصال بالخادم، تحقق من اتصال الإنترنت وحاول مرة أخرى' };
+    }
+    return { title: 'حدث خطأ', message: 'حدث خطأ في الخادم، يرجى المحاولة لاحقًا' };
+  }
+
   renderError(error) {
     if (!this.mainContainer) return;
+    const info = this.describeDashboardError(error);
+    const loginButton = info.showLogin
+      ? '<button class="btn btn-primary" id="error-login-btn" style="margin-top: 1rem;">تسجيل الدخول</button>'
+      : '';
     this.mainContainer.innerHTML = `
       <div style="background: #ffe4e6; border: 1px solid #fecdd3; border-radius: 1rem; padding: 2rem; text-align: center; margin-top: 2rem;">
-        <h3 style="color: #9f1239; font-weight: 800; font-size: 1.25rem;">تعذر الاتصال بالخادم</h3>
-        <p style="color: #e11d48; font-size: 0.85rem; margin-top: 0.5rem;">${error.message || 'حدث خطأ أثناء تحميل البيانات'}</p>
+        <h3 style="color: #9f1239; font-weight: 800; font-size: 1.25rem;">${info.title}</h3>
+        <p style="color: #e11d48; font-size: 0.85rem; margin-top: 0.5rem;">${info.message}</p>
         <p style="color: #64748b; font-size: 0.75rem; margin-top: 1rem;">يرجى المحاولة مرة أخرى لاحقاً.</p>
         <button class="btn btn-primary" onclick="window.location.reload()" style="margin-top: 1rem;">إعادة المحاولة</button>
+        ${loginButton}
       </div>
     `;
+    if (info.showLogin) {
+      const loginBtn = document.getElementById('error-login-btn');
+      if (loginBtn) {
+        loginBtn.addEventListener('click', () => {
+          if (this.router) {
+            this.router.navigate('/login');
+          }
+        });
+      }
+    }
   }
 
   /**

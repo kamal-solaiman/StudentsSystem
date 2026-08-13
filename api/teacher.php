@@ -232,6 +232,14 @@ try {
         // Create Study Group
         if ($action === 'create_group') {
             $classId = (int)($payload['class_id'] ?? 1);
+
+            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
+            $stmtChk = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+            $stmtChk->execute(['cid' => $classId, 'tid' => $teacherId]);
+            if ($stmtChk->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
             $name = Helper::sanitizeString($payload['name'] ?? '');
             $studyDays = json_encode($payload['study_days'] ?? ['الأحد', 'الثلاثاء'], JSON_UNESCAPED_UNICODE);
             $time = Helper::sanitizeString($payload['class_time'] ?? '05:00 مساءً');
@@ -265,6 +273,20 @@ try {
             $gradeLevel = Helper::sanitizeString($payload['grade_level'] ?? 'ثالثة ثانوي');
             $groupId = (int)($payload['group_id'] ?? 1);
             $classId = (int)($payload['class_id'] ?? 1);
+
+            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
+            $stmtChkC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+            $stmtChkC->execute(['cid' => $classId, 'tid' => $teacherId]);
+            if ($stmtChkC->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
+            // SECURITY (P1-B): Verify the group belongs to this teacher's tenant
+            $stmtChkG = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
+            $stmtChkG->execute(['gid' => $groupId, 'tid' => $teacherId]);
+            if ($stmtChkG->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
 
             $db->beginTransaction();
             try {
@@ -324,6 +346,34 @@ try {
             $studentId = (int)($payload['student_id'] ?? 1);
             $groupId = (int)($payload['group_id'] ?? 1);
             $classId = (int)($payload['class_id'] ?? 1);
+
+            // SECURITY (P1-B): Verify the student exists
+            $stmtStu = $db->prepare('SELECT id FROM students WHERE id = :sid LIMIT 1');
+            $stmtStu->execute(['sid' => $studentId]);
+            if ($stmtStu->fetch() === false) {
+                Helper::sendNotFound('Student not found');
+            }
+
+            // SECURITY (P1-B): Prevent duplicate enrollment with the same teacher
+            $stmtDup = $db->prepare('SELECT id FROM student_enrollments WHERE teacher_id = :tid AND student_id = :sid LIMIT 1');
+            $stmtDup->execute(['tid' => $teacherId, 'sid' => $studentId]);
+            if ($stmtDup->fetch() !== false) {
+                Helper::sendJson(['success' => false, 'message' => 'الطالب مرتبط بالفعل بمجموعات هذا المدرس'], 400);
+            }
+
+            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
+            $stmtChkC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+            $stmtChkC->execute(['cid' => $classId, 'tid' => $teacherId]);
+            if ($stmtChkC->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
+            // SECURITY (P1-B): Verify the group belongs to this teacher's tenant
+            $stmtChkG = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
+            $stmtChkG->execute(['gid' => $groupId, 'tid' => $teacherId]);
+            if ($stmtChkG->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
 
             $stmt = $db->prepare('
                 INSERT INTO student_enrollments (teacher_id, student_id, class_id, group_id, enrollment_date, status, payment_status)

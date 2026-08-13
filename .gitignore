@@ -1,6 +1,9 @@
 # Security: Database credentials
 config/db_credentials.php
 
+# Security: Dynamic QR HMAC secret (P1-G)
+config/qr_secret.php
+
 # IDE/Editor files
 .idea/
 .vscode/
