@@ -74,7 +74,11 @@ class ApiClient {
             sessionStorage.removeItem('csrf_token');
           }
         }
-        throw new Error(data.message || data.error || `Server error: ${response.status}`);
+        const error = new Error(data.message || data.error || `Server error: ${response.status}`);
+        // P1-E: expose the HTTP status so UI layers can distinguish
+        // 401 / 403 / 500 / network failures without parsing messages.
+        error.status = response.status;
+        throw error;
       }
 
       // Extract CSRF token from response if present
@@ -139,8 +143,38 @@ class ApiClient {
     return this.request(url, 'GET');
   }
 
+  /**
+   * P1-E: Fetch the authenticated teacher's question bank + exams.
+   * Server-side, exams.php scopes everything to the session tenant.
+   */
+  static async getExamsData() {
+    return this.request('exams.php', 'GET');
+  }
+
   static async recordAttendance(data) {
     return this.request('attendance.php', 'POST', data);
+  }
+
+  /**
+   * P1-G: Teacher/staff issue a signed 45s broadcast QR (backend signs it;
+   * no HMAC or secret ever exists in JavaScript).
+   */
+  static async generateAttendanceQr(groupId) {
+    return this.request('attendance.php?action=generate_qr', 'POST', {
+      action: 'generate_qr',
+      group_id: Number(groupId)
+    });
+  }
+
+  /**
+   * P1-G: Student submits a scanned dynamic QR token. ALL validation
+   * (signature, expiry, tenant, enrollment) happens server-side.
+   */
+  static async submitAttendanceQr(qrToken) {
+    return this.request('attendance.php', 'POST', {
+      method: 'dynamic_qr',
+      qr_token: String(qrToken || '')
+    });
   }
 
   static async createExam(data) {

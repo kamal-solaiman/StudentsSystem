@@ -6,6 +6,8 @@ class StudentController {
     this.container = containerElement;
     this.data = data;
     this.activeTab = 'overview';
+    // P1-G: QR attendance submission guard (double-submit prevention)
+    this._qrSubmitting = false;
   }
 
   render() {
@@ -91,6 +93,7 @@ class StudentController {
 
       <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 1.5rem;">
         <h3 style="font-weight: 800; font-size: 1.15rem;">المدرسون المشترك معهم حالياً:</h3>
+        ${subs.length === 0 ? this.renderEmptyText('لا توجد اشتراكات مع مدرسين حاليًا') : `
         <div class="grid-2" style="margin-top: 1rem;">
           ${subs.map(s => `
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem;">
@@ -99,8 +102,30 @@ class StudentController {
             </div>
           `).join('')}
         </div>
+        `}
+      </div>
+
+      <!-- P1-G: Dynamic QR attendance submission — validation is 100% server-side -->
+      <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 1.5rem;">
+        <h3 style="font-weight: 800; font-size: 1.15rem;">تسجيل الحضور بالرمز الديناميكي</h3>
+        <p style="font-size: 0.8rem; color: #64748b; margin-top: 0.35rem;">أدخل أو الصق الرمز الظاهر على شاشة الفصل — التحقق من الصلاحية يتم على الخادم فقط</p>
+        <div style="display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap;">
+          <input type="text" id="student-qr-token-input" class="form-control" placeholder="رمز الحضور" style="flex: 1; min-width: 220px; font-family: monospace;">
+          <button class="btn btn-primary" id="btn-submit-qr-attendance">تسجيل الحضور</button>
+        </div>
+        <div id="qr-attendance-result" style="display: none; margin-top: 1rem; padding: 0.75rem; border-radius: 0.5rem; font-size: 0.85rem;"></div>
       </div>
     `;
+  }
+
+  /** P1-F: shared empty states (distinct from Loading / Error) */
+  renderEmptyRow(colspan, message) {
+    const text = message || 'لا توجد بيانات متاحة حاليًا';
+    return `<tr><td colspan="${colspan}" style="padding: 1.5rem; text-align: center; color: #64748b;">${text}</td></tr>`;
+  }
+
+  renderEmptyText(message) {
+    return `<p style="color: #64748b; text-align: center; padding: 1.5rem; font-size: 0.9rem;">${message}</p>`;
   }
 
   renderSchedule() {
@@ -116,6 +141,11 @@ class StudentController {
         </tr>
       `;
     });
+
+    // P1-F: Empty state
+    if ((this.data.subscriptions || []).length === 0) {
+      listHtml = this.renderEmptyRow(5, 'لا توجد مواعيد مسجلة حاليًا');
+    }
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
@@ -159,6 +189,11 @@ class StudentController {
       `;
     });
 
+    // P1-F: Empty state
+    if ((this.data.homeworks || []).length === 0) {
+      listHtml = this.renderEmptyRow(6, 'لا توجد واجبات حاليًا');
+    }
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
@@ -197,6 +232,11 @@ class StudentController {
       `;
     });
 
+    // P1-F: Empty state
+    if ((this.data.exams || []).length === 0) {
+      listHtml = this.renderEmptyRow(5, 'لا توجد امتحانات حاليًا');
+    }
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
@@ -221,11 +261,13 @@ class StudentController {
   }
 
   renderLessons() {
+    const lessons = this.data.lessons || [];
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 1.5rem;">
         <h3 style="font-weight: 800; font-size: 1.15rem;">الفيديوهات والدروس المسجلة لكل مدرس</h3>
+        ${lessons.length === 0 ? this.renderEmptyText('لا توجد دروس مسجلة حاليًا') : `
         <div class="grid-2" style="margin-top: 1rem;">
-          ${(this.data.lessons || []).map(l => `
+          ${lessons.map(l => `
             <div style="border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.25rem;">
               <span class="badge badge-emerald" style="background: #e0e7ff; color: #4f46e5;">${l.subject}</span>
               <h4 style="font-weight: 800; margin-top: 0.5rem;">${l.title}</h4>
@@ -233,16 +275,19 @@ class StudentController {
             </div>
           `).join('')}
         </div>
+        `}
       </div>
     `;
   }
 
   renderSubscriptions() {
+    const subs = this.data.subscriptions || [];
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 1.5rem;">
         <h3 style="font-weight: 800; font-size: 1.15rem;">اشتراكاتي والمدرسون (حالة الاشتراك والدفع)</h3>
+        ${subs.length === 0 ? this.renderEmptyText('لا توجد اشتراكات حاليًا') : `
         <div class="grid-2" style="margin-top: 1rem;">
-          ${(this.data.subscriptions || []).map(s => `
+          ${subs.map(s => `
             <div style="border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.25rem;">
               <h4 style="font-weight: 800;">${s.teacher_name} (${s.subject})</h4>
               <p style="font-size: 0.8rem; color: #64748b;">${s.center_name}</p>
@@ -253,6 +298,7 @@ class StudentController {
             </div>
           `).join('')}
         </div>
+        `}
       </div>
     `;
   }
@@ -276,6 +322,62 @@ class StudentController {
     `;
   }
 
+  /**
+   * P1-G: submit the scanned dynamic QR token. The frontend performs NO
+   * security decision (no HMAC, no expiry, no ownership checks) — the
+   * backend validates everything and answers with safe Arabic messages.
+   */
+  async submitQrAttendance() {
+    const btn = document.getElementById('btn-submit-qr-attendance');
+    const input = document.getElementById('student-qr-token-input');
+    const resultBox = document.getElementById('qr-attendance-result');
+    if (!btn || !input || !resultBox) return;
+    if (this._qrSubmitting) return; // double-submit prevention
+
+    const showResult = (ok, text) => {
+      resultBox.style.display = 'block';
+      resultBox.style.background = ok ? '#d1fae5' : '#ffe4e6';
+      resultBox.style.color = ok ? '#065f46' : '#9f1239';
+      resultBox.style.border = '1px solid ' + (ok ? '#a7f3d0' : '#fecdd3');
+      resultBox.textContent = text; // textContent only — XSS-safe
+    };
+
+    const token = (input.value || '').trim();
+    if (token === '') {
+      showResult(false, 'يرجى إدخال رمز الحضور');
+      return;
+    }
+
+    this._qrSubmitting = true;
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    const originalLabel = btn.textContent;
+    btn.textContent = 'جارٍ التحقق...';
+
+    try {
+      const data = await ApiClient.submitAttendanceQr(token);
+      showResult(true, data.message || 'تم تسجيل الحضور بنجاح');
+      input.value = '';
+    } catch (error) {
+      const status = error && error.status;
+      if (status === 400 || status === 403 || status === 404) {
+        // Safe Arabic messages produced by the backend (no internals exposed)
+        showResult(false, error.message || 'رمز الحضور غير صالح');
+      } else if (status === 401) {
+        showResult(false, 'انتهت جلسة تسجيل الدخول، يرجى تسجيل الدخول مرة أخرى');
+      } else if (!status) {
+        showResult(false, 'تعذر الاتصال بالخادم، تحقق من اتصال الإنترنت وحاول مرة أخرى');
+      } else {
+        showResult(false, 'حدث خطأ غير متوقع');
+      }
+    } finally {
+      this._qrSubmitting = false;
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      btn.textContent = originalLabel;
+    }
+  }
+
   attachEventListeners() {
     this.container.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -288,5 +390,11 @@ class StudentController {
         }
       });
     });
+
+    // P1-G: QR attendance submission
+    const btnQrAttendance = document.getElementById('btn-submit-qr-attendance');
+    if (btnQrAttendance) {
+      btnQrAttendance.addEventListener('click', () => this.submitQrAttendance());
+    }
   }
 }

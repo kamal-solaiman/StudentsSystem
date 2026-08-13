@@ -21,9 +21,11 @@ if ($email === '' || $password === '') {
     Helper::sendJson(['success' => false, 'message' => 'Email and password are required'], 422);
 }
 
-// Check rate limit for login attempts
-if (!AuthManager::checkRateLimit($email)) {
-    $remaining = AuthManager::getRateLimitRemaining($email);
+// SECURITY (P1-D): Database-backed rate limiting keyed by identifier + IP hash.
+// Counters survive cookie deletion, private windows, new sessions and other
+// devices from the same source IP. Only FAILED attempts are recorded.
+$clientIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+if (!AuthManager::checkRateLimit($email, $clientIp)) {
     $retryAfter = ceil(AuthManager::getRateLimitWindow() / 60); // minutes
     Helper::sendJson([
         'success' => false,
@@ -47,7 +49,8 @@ try {
     $user = $stmt->fetch();
 
     if ($user === false) {
-        // Log failed attempt (don't reveal email existence)
+        // SECURITY (P1-D): record failed attempt (message does not reveal email existence)
+        AuthManager::recordFailedLoginAttempt($email, $clientIp);
         Helper::sendJson(['success' => false, 'message' => 'Invalid credentials'], 401);
     }
 
@@ -59,6 +62,8 @@ try {
     $passwordValid = password_verify($password, (string)$user['password_hash']);
 
     if (!$passwordValid) {
+        // SECURITY (P1-D): record failed attempt (message does not reveal email existence)
+        AuthManager::recordFailedLoginAttempt($email, $clientIp);
         Helper::sendJson(['success' => false, 'message' => 'Invalid credentials'], 401);
     }
 

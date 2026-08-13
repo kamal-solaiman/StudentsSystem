@@ -271,4 +271,20 @@ CREATE TABLE IF NOT EXISTS `saas_settings` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 18. Login Attempts (P1-D: database-backed login rate limiting)
+-- Counters are keyed by identifier (email) and by hashed-IP key ('ip:<sha256>').
+-- Stores ONLY identifier / hashed IP / attempt counters / timestamps.
+-- NEVER stores passwords or any secret.
+CREATE TABLE IF NOT EXISTS `login_attempts` (
+  `id`               INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `identifier`       VARCHAR(190) NOT NULL,
+  `ip_hash`          CHAR(64)     NOT NULL,
+  `attempts`         INT UNSIGNED NOT NULL DEFAULT 1,
+  `first_attempt_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `last_attempt_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_login_attempts_identifier` (`identifier`),
+  KEY `idx_login_attempts_last` (`last_attempt_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

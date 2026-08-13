@@ -107,6 +107,16 @@ class ParentController {
     `;
   }
 
+  /** P1-F: shared empty states (distinct from Loading / Error) */
+  renderEmptyRow(colspan, message) {
+    const text = message || 'لا توجد بيانات متاحة حاليًا';
+    return `<tr><td colspan="${colspan}" style="padding: 1.5rem; text-align: center; color: #64748b;">${text}</td></tr>`;
+  }
+
+  renderEmptyText(message) {
+    return `<p style="color: #64748b; text-align: center; padding: 1.5rem; font-size: 0.9rem;">${message}</p>`;
+  }
+
   renderHomeworks() {
     let listHtml = '';
     (this.data.homeworks || []).forEach(h => {
@@ -119,6 +129,11 @@ class ParentController {
         </tr>
       `;
     });
+
+    // P1-F: Empty state
+    if ((this.data.homeworks || []).length === 0) {
+      listHtml = this.renderEmptyRow(4, 'لا توجد واجبات مسجلة حاليًا');
+    }
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
@@ -161,6 +176,11 @@ class ParentController {
       `;
     });
 
+    // P1-F: Empty state
+    if ((att.records || []).length === 0) {
+      listHtml = this.renderEmptyRow(5, 'لا توجد سجلات حضور حاليًا');
+    }
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
@@ -200,6 +220,11 @@ class ParentController {
       `;
     });
 
+    // P1-F: Empty state
+    if ((this.data.exams || []).length === 0) {
+      listHtml = this.renderEmptyRow(4, 'لا توجد امتحانات مسجلة حاليًا');
+    }
+
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
@@ -223,11 +248,13 @@ class ParentController {
   }
 
   renderTeachers() {
+    const teachers = this.data.teachers || [];
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 1.5rem;">
         <h3 style="font-weight: 800; font-size: 1.15rem;">المدرسون المشترك معهم الابن وحالة الدفع والاشتراك</h3>
+        ${teachers.length === 0 ? this.renderEmptyText('لا توجد اشتراكات مع مدرسين حاليًا') : `
         <div class="grid-2" style="margin-top: 1rem;">
-          ${(this.data.teachers || []).map(t => `
+          ${teachers.map(t => `
             <div style="border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.25rem;">
               <span class="badge badge-emerald" style="background: #f3e8ff; color: #6b21a8;">${t.subject}</span>
               <h4 style="font-weight: 800; margin-top: 0.5rem;">${t.teacher_name}</h4>
@@ -239,6 +266,7 @@ class ParentController {
             </div>
           `).join('')}
         </div>
+        `}
       </div>
     `;
   }

@@ -13,6 +13,14 @@ final class AuthManager
     private const CSRF_TOKEN_LENGTH = 32;
     private const RATE_LIMIT_WINDOW = 900; // 15 minutes in seconds
     private const RATE_LIMIT_MAX_ATTEMPTS = 5;
+    // SECURITY (P1-D): per-IP cap across all identifiers (anti credential-stuffing)
+    private const RATE_LIMIT_IP_MAX_ATTEMPTS = 20;
+    // SECURITY (P1-D): ~1% of checks piggy-back a purge of stale rows (no cron on cPanel)
+    private const RATE_LIMIT_CLEANUP_DIVISOR = 100;
+    // SECURITY (P1-C): Unified idle session timeout — 30 minutes for ALL roles
+    // (super_admin / teacher / staff / student / parent). Backend is the source
+    // of truth; enforced centrally in getCurrentUser().
+    private const IDLE_TIMEOUT_SECONDS = 1800;
 
     public static function startSession(): void
     {
@@ -42,6 +50,10 @@ final class AuthManager
         $_SESSION['role'] = (string)$userRow['role'];
         $_SESSION['phone'] = (string)$userRow['phone'];
         
+        // SECURITY (P1-C): Initialize idle-timeout tracking for the new session.
+        // Refreshed on every authenticated request by getCurrentUser().
+        $_SESSION['last_activity'] = time();
+
         // Determine tenant_teacher_id based on user role
         // For teachers: from teachers table
         // For staff: from teacher_staff table (staff_teacher_id)
@@ -121,8 +133,23 @@ final class AuthManager
     {
         self::startSession();
         if (!isset($_SESSION['user_id'])) {
+            // Unauthenticated / public requests never touch last_activity
             return null;
         }
+
+        // SECURITY (P1-C): Unified idle session timeout (30 minutes, all roles).
+        // If no authenticated activity happened within the window, destroy the
+        // session safely via the existing logout mechanism. The caller then
+        // receives null -> protected APIs answer 401 -> the frontend router
+        // probe clears local auth state and redirects to /login.
+        $lastActivity = (int)($_SESSION['last_activity'] ?? 0);
+        if ($lastActivity === 0 || (time() - $lastActivity) > self::IDLE_TIMEOUT_SECONDS) {
+            self::logout();
+            return null;
+        }
+
+        // Legitimate authenticated activity refreshes the idle window
+        $_SESSION['last_activity'] = time();
 
         return [
             'user_id' => (int)$_SESSION['user_id'],
@@ -307,79 +334,181 @@ final class AuthManager
     }
 
     /**
-     * Check rate limit for login attempts
+     * SECURITY (P1-D): Database-backed login rate limiting.
+     *
+     * Counters live in the `login_attempts` table, NOT in $_SESSION, so the
+     * limit survives cookie deletion, private/incognito windows, brand-new
+     * sessions and other devices using the same source IP. Two dimensions are
+     * enforced: per identifier (email) and per IP hash.
+     *
+     * This check is READ-ONLY: only failed attempts are recorded, via
+     * recordFailedLoginAttempt(), after a failed credential check.
      */
-    public static function checkRateLimit(string $identifier): bool
+    public static function checkRateLimit(string $identifier, string $ip): bool
     {
-        self::startSession();
-        
-        $key = 'rate_limit_' . $identifier;
-        
-        if (!isset($_SESSION[$key])) {
-            $_SESSION[$key] = [
-                'attempts' => 0,
-                'first_attempt' => time(),
-                'last_attempt' => time()
-            ];
+        try {
+            $db = DatabaseConnection::fromConfigFile()->connect();
+        } catch (Throwable) {
+            // Database unreachable: login cannot succeed anyway (the user
+            // lookup needs the same database), so fail open here and let the
+            // lookup produce the generic system error.
             return true;
         }
-        
-        $rateData = $_SESSION[$key];
-        $now = time();
-        
-        // Reset if window expired
-        if ($now - $rateData['first_attempt'] > self::RATE_LIMIT_WINDOW) {
-            $_SESSION[$key] = [
-                'attempts' => 0,
-                'first_attempt' => $now,
-                'last_attempt' => $now
-            ];
-            return true;
-        }
-        
-        // Check if max attempts exceeded
-        if ($rateData['attempts'] >= self::RATE_LIMIT_MAX_ATTEMPTS) {
+
+        self::maybePurgeOldLoginAttempts($db);
+
+        // Per-identifier (email) limit
+        $stmt = $db->prepare('
+            SELECT attempts, first_attempt_at
+            FROM login_attempts
+            WHERE identifier = :identifier
+            LIMIT 1
+        ');
+        $stmt->execute(['identifier' => $identifier]);
+        $row = $stmt->fetch();
+        if ($row !== false && self::loginAttemptsExceedLimit($row, self::RATE_LIMIT_MAX_ATTEMPTS)) {
             return false;
         }
-        
-        // Increment attempt counter
-        $_SESSION[$key]['attempts'] = $rateData['attempts'] + 1;
-        $_SESSION[$key]['last_attempt'] = $now;
-        
+
+        // Per-IP limit (blocks credential stuffing across many emails)
+        $stmt->execute(['identifier' => self::loginAttemptIpKey($ip)]);
+        $row = $stmt->fetch();
+        if ($row !== false && self::loginAttemptsExceedLimit($row, self::RATE_LIMIT_IP_MAX_ATTEMPTS)) {
+            return false;
+        }
+
         return true;
     }
 
     /**
-     * Clear rate limit for identifier
+     * SECURITY (P1-D): Record one FAILED login attempt for both the identifier
+     * and the IP. Atomic upsert (InnoDB row locking) — no application locks
+     * needed; the counter resets automatically once the previous window
+     * expires. Only identifier / hashed IP / counters / timestamps are stored:
+     * NEVER passwords or secrets.
      */
-    public static function clearRateLimit(string $identifier): void
+    public static function recordFailedLoginAttempt(string $identifier, string $ip): void
     {
-        self::startSession();
-        $key = 'rate_limit_' . $identifier;
-        unset($_SESSION[$key]);
+        try {
+            $db = DatabaseConnection::fromConfigFile()->connect();
+        } catch (Throwable) {
+            // Best effort: the authentication failure response is still sent
+            return;
+        }
+
+        $window = self::RATE_LIMIT_WINDOW;
+        $sql = "
+            INSERT INTO login_attempts (identifier, ip_hash, attempts, first_attempt_at, last_attempt_at)
+            VALUES (:identifier, :ip_hash, 1, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                attempts = IF(last_attempt_at <= NOW() - INTERVAL $window SECOND, 1, attempts + 1),
+                first_attempt_at = IF(last_attempt_at <= NOW() - INTERVAL $window SECOND, NOW(), first_attempt_at)
+        ";
+
+        try {
+            $ipKey = self::loginAttemptIpKey($ip);
+
+            $stmt = $db->prepare($sql);
+            $stmt->execute(['identifier' => $identifier, 'ip_hash' => $ipKey]);
+
+            $stmt = $db->prepare($sql);
+            $stmt->execute(['identifier' => $ipKey, 'ip_hash' => $ipKey]);
+        } catch (Throwable) {
+            // Best effort: the authentication failure response is still sent
+        }
     }
 
     /**
-     * Get remaining rate limit attempts
+     * Clear rate limit for identifier (successful login resets the email counter)
      */
-    public static function getRateLimitRemaining(string $identifier): int
+    public static function clearRateLimit(string $identifier): void
     {
-        self::startSession();
-        $key = 'rate_limit_' . $identifier;
-        
-        if (!isset($_SESSION[$key])) {
+        try {
+            $db = DatabaseConnection::fromConfigFile()->connect();
+            $stmt = $db->prepare('DELETE FROM login_attempts WHERE identifier = :identifier');
+            $stmt->execute(['identifier' => $identifier]);
+        } catch (Throwable) {
+            // Best effort: a stale counter only tightens future attempts
+        }
+    }
+
+    /**
+     * Get remaining rate limit attempts (minimum of identifier and IP budgets)
+     */
+    public static function getRateLimitRemaining(string $identifier, string $ip): int
+    {
+        try {
+            $db = DatabaseConnection::fromConfigFile()->connect();
+        } catch (Throwable) {
             return self::RATE_LIMIT_MAX_ATTEMPTS;
         }
-        
-        $rateData = $_SESSION[$key];
-        $now = time();
-        
-        // Reset if window expired
-        if ($now - $rateData['first_attempt'] > self::RATE_LIMIT_WINDOW) {
-            return self::RATE_LIMIT_MAX_ATTEMPTS;
+
+        $remaining = self::RATE_LIMIT_MAX_ATTEMPTS;
+
+        $stmt = $db->prepare('
+            SELECT attempts, first_attempt_at
+            FROM login_attempts
+            WHERE identifier = :identifier
+            LIMIT 1
+        ');
+
+        $stmt->execute(['identifier' => $identifier]);
+        $row = $stmt->fetch();
+        if ($row !== false) {
+            $remaining = self::remainingFromRow($row, self::RATE_LIMIT_MAX_ATTEMPTS);
         }
-        
-        return max(0, self::RATE_LIMIT_MAX_ATTEMPTS - $rateData['attempts']);
+
+        $stmt->execute(['identifier' => self::loginAttemptIpKey($ip)]);
+        $row = $stmt->fetch();
+        if ($row !== false) {
+            $remaining = min($remaining, self::remainingFromRow($row, self::RATE_LIMIT_IP_MAX_ATTEMPTS));
+        }
+
+        return $remaining;
+    }
+
+    /**
+     * SECURITY (P1-D): One-way hash of the client IP. The limiter only needs
+     * equality for counting; raw IPs are never stored.
+     */
+    private static function loginAttemptIpKey(string $ip): string
+    {
+        return 'ip:' . hash('sha256', $ip);
+    }
+
+    private static function loginAttemptsExceedLimit(array $row, int $maxAttempts): bool
+    {
+        $firstAttempt = strtotime((string)$row['first_attempt_at']);
+        if ($firstAttempt === false || (time() - $firstAttempt) > self::RATE_LIMIT_WINDOW) {
+            return false; // window expired; counter resets on the next failure
+        }
+        return (int)$row['attempts'] >= $maxAttempts;
+    }
+
+    private static function remainingFromRow(array $row, int $maxAttempts): int
+    {
+        $firstAttempt = strtotime((string)$row['first_attempt_at']);
+        if ($firstAttempt === false || (time() - $firstAttempt) > self::RATE_LIMIT_WINDOW) {
+            return $maxAttempts;
+        }
+        return max(0, $maxAttempts - (int)$row['attempts']);
+    }
+
+    /**
+     * SECURITY (P1-D): cPanel shared hosting has no cron, so cleanup of stale
+     * rows piggy-backs on ~1% of rate-limit checks. Best effort only.
+     */
+    private static function maybePurgeOldLoginAttempts(PDO $db): void
+    {
+        if (mt_rand(1, self::RATE_LIMIT_CLEANUP_DIVISOR) !== 1) {
+            return;
+        }
+
+        try {
+            $db->exec('DELETE FROM login_attempts WHERE last_attempt_at < NOW() - INTERVAL 1 DAY');
+        } catch (Throwable) {
+            // cleanup is best-effort
+        }
     }
 
     /**

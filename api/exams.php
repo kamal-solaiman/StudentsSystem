@@ -97,6 +97,14 @@ try {
         // Add Question to Bank (4 types: mcq, true_false, essay, bubble_sheet)
         if ($action === 'create_question') {
             $classId = (int)($payload['class_id'] ?? 1);
+
+            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
+            $stmtChk = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+            $stmtChk->execute(['cid' => $classId, 'tid' => $teacherId]);
+            if ($stmtChk->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
             $subject = Helper::sanitizeString($payload['subject'] ?? 'أسئلة عامة');
             $questionType = Helper::sanitizeString($payload['question_type'] ?? 'mcq');
             $questionText = Helper::sanitizeString($payload['question_text'] ?? '');
@@ -133,6 +141,44 @@ try {
             $examType = Helper::sanitizeString($payload['exam_type'] ?? 'monthly');
             $totalPoints = (float)($payload['total_points'] ?? 100.0);
             $questionIds = is_array($payload['question_ids'] ?? null) ? $payload['question_ids'] : [];
+
+            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
+            $stmtChkC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+            $stmtChkC->execute(['cid' => $classId, 'tid' => $teacherId]);
+            if ($stmtChkC->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
+            // SECURITY (P1-B): Verify the group (when provided) belongs to this teacher's tenant
+            if ($groupId !== null) {
+                $stmtChkG = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
+                $stmtChkG->execute(['gid' => $groupId, 'tid' => $teacherId]);
+                if ($stmtChkG->fetch() === false) {
+                    Helper::sendForbidden('Access denied');
+                }
+            }
+
+            // SECURITY (P1-B): Sanitize question IDs and verify every one of them
+            // belongs to this teacher's own question bank (blocks cross-tenant linking)
+            $questionIdMap = [];
+            foreach ($questionIds as $qid) {
+                $qid = (int)$qid;
+                if ($qid > 0) {
+                    $questionIdMap[$qid] = $qid; // cast + dedupe
+                }
+            }
+            $questionIds = array_values($questionIdMap);
+
+            if (!empty($questionIds)) {
+                $placeholders = implode(',', array_fill(0, count($questionIds), '?'));
+                $stmtChkQ = $db->prepare(
+                    "SELECT COUNT(*) AS c FROM question_bank WHERE teacher_id = ? AND id IN ($placeholders)"
+                );
+                $stmtChkQ->execute(array_merge([$teacherId], $questionIds));
+                if ((int)$stmtChkQ->fetch()['c'] !== count($questionIds)) {
+                    Helper::sendForbidden('Access denied');
+                }
+            }
 
             $db->beginTransaction();
             try {
