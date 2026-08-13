@@ -1068,6 +1068,20 @@ class TeacherController {
     `;
   }
 
+  attendanceActionMessage(message, isError = false) {
+    let box = document.getElementById('attendance-action-message');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'attendance-action-message';
+      box.style.cssText = 'margin:1rem auto 0;max-width:620px;padding:.75rem;border-radius:.5rem;text-align:center;font-size:.85rem;';
+      const target = this.container.querySelector('[data-att-method="manual"]')?.parentElement || this.container;
+      target.prepend(box);
+    }
+    box.textContent = message;
+    box.style.background = isError ? '#fef2f2' : '#ecfdf5';
+    box.style.color = isError ? '#b91c1c' : '#047857';
+  }
+
   /** P1-G: request a signed broadcast QR from the backend (client never signs) */
   async generateQr() {
     if (this.qrState.status === 'loading') return; // double-click guard
@@ -1192,11 +1206,47 @@ class TeacherController {
     // Modal triggers and actions
     const btnScan = document.getElementById('btn-submit-scan');
     if (btnScan) {
-      btnScan.addEventListener('click', () => {
-        const inputCode = document.getElementById('scanner-input-code')?.value || 'STU-10045';
-        alert(`تم تسجيل الحضور بنجاح للطالب ذو الكود: ${inputCode}`);
+      btnScan.addEventListener('click', async () => {
+        const input = document.getElementById('scanner-input-code');
+        const inputCode = input?.value.trim() || '';
+        if (!inputCode) {
+          this.attendanceActionMessage('يرجى مسح QR كارنيه الطالب أو إدخال الكود أولاً', true);
+          return;
+        }
+        btnScan.disabled = true;
+        try {
+          const response = await ApiClient.recordAttendance({
+            student_code: inputCode,
+            method: 'id_scanner',
+            status: 'present'
+          });
+          this.attendanceActionMessage(response.message || 'تم تسجيل الحضور بنجاح', false);
+          if (input) input.value = '';
+        } catch (error) {
+          this.attendanceActionMessage(error.message || 'تعذر تسجيل الحضور', true);
+        } finally {
+          btnScan.disabled = false;
+        }
       });
     }
+
+    this.container.querySelectorAll('[data-action="record-att-manual"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const response = await ApiClient.recordAttendance({
+            student_id: Number(btn.dataset.studentId),
+            method: 'manual',
+            status: 'present'
+          });
+          this.attendanceActionMessage(response.message || 'تم تسجيل الحضور بنجاح', false);
+        } catch (error) {
+          this.attendanceActionMessage(error.message || 'تعذر تسجيل الحضور', true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
 
     // P1-E: Reports / Exams error panels — retry & login redirect
     this.container.querySelectorAll('[data-action="retry-tab"]').forEach(btn => {

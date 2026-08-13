@@ -63,7 +63,12 @@ class ApiClient {
     }
 
     try {
-      const response = await fetch(`api/${endpoint}`, options);
+      // The SPA uses history routes such as /110/teacher/attendance. A
+      // document-relative URL would incorrectly request /110/teacher/api/*.
+      // Resolve API calls from the application base path instead.
+      const path = window.location.pathname;
+      const basePath = path.startsWith('/110/') || path === '/110' || path === '/110/' ? '/110/' : '/';
+      const response = await fetch(`${basePath}api/${endpoint}`, options);
       const data = await response.json();
 
       if (!response.ok) {
