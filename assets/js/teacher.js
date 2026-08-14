@@ -16,6 +16,12 @@ class TeacherController {
     this.qrState = { status: 'idle', token: '', exp: 0, groupId: '', message: '' };
     this._qrTimer = null;
     this._qrPresentation = null;
+    // P1-G async guard: monotonically increasing request sequence + the group
+    // of the request currently in flight. A delayed response whose seq no
+    // longer matches the latest generation is discarded, so a stale response
+    // can never overwrite a newer group selection (A→B→C rapid switching).
+    this._qrRequestSeq = 0;
+    this._qrPendingGroup = '';
 
     // P1-E: independent async data states for the Reports & Exams tabs
     this.reportsState = 'idle'; // idle | loading | ready | error
@@ -1011,13 +1017,17 @@ class TeacherController {
   renderDynamicQrScreen() {
     const st = this.qrState;
     const groups = this.data.groups || [];
+    const selector = this._qrGroupSelectorHtml(groups, st.groupId);
 
     if (st.status === 'loading') {
       return `
         <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
           <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
           <p style="margin-top: 1rem; font-size: 0.9rem; color: #a7f3d0;">جاري توليد رمز الحضور...</p>
-        </div>
+          <div style="max-width: 420px; margin: 1.25rem auto 0;">
+            ${selector}
+          </div>
+		</div>
       `;
     }
 
@@ -1028,7 +1038,10 @@ class TeacherController {
           <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
           <h3 style="font-size: 1.5rem; font-weight: 800; margin-top: 0.75rem;">اعرض هذا الكود على شاشة القاعة أو البروجيكتور</h3>
           <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.25rem;">الرمز موقّع من الخادم وتنتهي صلاحيته تلقائيًا خلال ثوانٍ</p>
-          <div class="dynamic-qr-box"${expired ? ' style="opacity: 0.25; filter: grayscale(1);"' : ''}>
+          <div style="max-width: 420px; margin: 1rem auto 0;">
+            ${selector}
+          </div>
+		  <div class="dynamic-qr-box"${expired ? ' style="opacity: 0.25; filter: grayscale(1);"' : ''}>
             <div class="dynamic-qr-graphic" id="dynamic-qr-graphic"></div>
           </div>
           ${expired
@@ -1046,7 +1059,10 @@ class TeacherController {
       return `
         <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
           <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
-          <p style="margin-top: 1rem; font-size: 0.9rem; color: #fecaca;">${st.message || 'تعذر توليد رمز الحضور'}</p>
+          <div style="max-width: 420px; margin: 1.25rem auto 0;">
+            ${selector}
+          </div>
+		  <p style="margin-top: 1rem; font-size: 0.9rem; color: #fecaca;">${st.message || 'تعذر توليد رمز الحضور'}</p>
           <button class="btn btn-secondary" id="btn-retry-qr" style="margin-top: 0.75rem;">إعادة المحاولة</button>
         </div>
       `;
@@ -1062,20 +1078,39 @@ class TeacherController {
       `;
     }
 
-    const selected = st.groupId || groups[0].id;
+    // When a validation message is showing and no group is chosen, keep the
+    // "— اختر مجموعة —" placeholder selected so the no-group state stays
+    // visually represented (and توليد keeps validating instead of defaulting
+    // to the first group).
+    const selected = (!st.groupId && st.message) ? '' : (st.groupId || groups[0].id);
     return `
       <div class="dynamic-qr-screen" style="margin-top: 1.5rem;">
         <span class="badge badge-emerald">الطريقة الأولى • شاشة الحضور بالـ QR المتغير</span>
         <h3 style="font-size: 1.35rem; font-weight: 800; margin-top: 0.75rem;">اختر المجموعة ثم ولّد رمز الحضور</h3>
         <p style="font-size: 0.8rem; color: #a7f3d0; margin-top: 0.25rem;">الرمز موقّع من الخادم (HMAC) وصلاحية كل رمز 45 ثانية فقط</p>
         <div style="max-width: 420px; margin: 1.25rem auto 0;">
-          <select id="qr-group-select" class="form-control">
-            ${groups.map(g => `<option value="${g.id}" ${String(g.id) === String(selected) ? 'selected' : ''}>${g.name} — ${g.class_name || 'عام'}</option>`).join('')}
-          </select>
+          ${this._qrGroupSelectorHtml(groups, selected)}
           <button class="btn btn-primary" id="btn-generate-qr" style="margin-top: 0.75rem; width: 100%;">توليد رمز الحضور</button>
-        </div>
+          ${st.message ? `<p style="color: #fecaca; font-size: 0.85rem; font-weight: 700; margin-top: 0.75rem;">${st.message}</p>` : ''}
+		</div>
       </div>
     `;
+  }
+
+
+  /**
+   * Group selector shared by every Dynamic QR screen state so the teacher can
+   * switch groups at ANY time — idle, loading, active, expired or error —
+   * without reloading the page. The empty placeholder option enables the
+   * "no group selected" validation path.
+   */
+  _qrGroupSelectorHtml(groups, selectedId) {
+    const options = ['<option value="">— اختر مجموعة —</option>'].concat(
+      groups.map(g =>
+        `<option value="${g.id}" ${String(g.id) === String(selectedId || '') ? 'selected' : ''}>${g.name} — ${g.class_name || 'عام'}</option>`
+      )
+    ).join('');
+    return `<select id="qr-group-select" class="form-control" aria-label="اختيار المجموعة">${options}</select>`;
   }
 
   attendanceActionMessage(message, isError = false) {
@@ -1092,40 +1127,127 @@ class TeacherController {
     box.style.color = isError ? '#b91c1c' : '#047857';
   }
 
-  /** P1-G: request a signed broadcast QR from the backend (client never signs) */
-  async generateQr() {
-    if (this.qrState.status === 'loading') return; // double-click guard
+  /**
+   * P1-G: request a signed broadcast QR from the backend (client never signs).
+   * @param {string|number} [groupId] optional explicit target group; when
+   * omitted, the currently selected group (qrState.groupId) is used.
+   */
+  async generateQr(groupId) {
     const groups = this.data.groups || [];
-    const groupId = this.qrState.groupId || (groups.length ? groups[0].id : null);
-    if (!groupId) return;
+    const explicit = groupId !== undefined && groupId !== null && String(groupId) !== '';
+    // Prefer the value currently shown in the selector so the button/refresh/
+    // auto-renew always acts on the group the teacher actually sees selected —
+    // including the "— اختر مجموعة —" placeholder, which must NOT generate.
+    let selectValue = '';
+    const select = document.getElementById('qr-group-select');
+    if (select) selectValue = String(select.value || '');
+    const target = explicit
+      ? String(groupId)
+      : (selectValue !== ''
+          ? selectValue
+          : (this.qrState.groupId ? String(this.qrState.groupId) : ''));
 
-    this.qrState.status = 'loading';
-    this.qrState.message = '';
+    if (!target) {
+      // No group selected — never call the API. Invalidate any in-flight
+      // request and show a clear Arabic validation message.
+      this._qrRequestSeq += 1;
+      this._qrPendingGroup = '';
+      this.stopQrCountdown();
+      this.closeQrPresentation();
+      this.qrState = { status: 'idle', token: '', exp: 0, groupId: '', message: 'يرجى اختيار مجموعة أولاً' };
+      if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
+      return;
+    }
+	
+    // Duplicate-request guard: the SAME group is already loading — ignore the
+    // extra click. A DIFFERENT group is allowed to start immediately even while
+    // the previous request is in flight (the seq guard discards the stale one).
+    if (this.qrState.status === 'loading' && this._qrPendingGroup === target) return;
+
+    // Version guard: any response whose seq is no longer the latest is dropped,
+    // so a delayed response for an older group can never overwrite the current
+    // selection (A → B → C rapid switching).
+    const seq = ++this._qrRequestSeq;
+    this._qrPendingGroup = target;
+
+    // Stop the old countdown, close any enlarged view of the OLD token, clear
+    // the old token/SVG, then show the loading state.
+    this.stopQrCountdown();
+    this.closeQrPresentation();
+    this.qrState = { status: 'loading', token: '', exp: 0, groupId: target, message: '' };
     if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
 
     try {
-      const data = await ApiClient.generateAttendanceQr(groupId);
-      this.qrState = {
+      const data = await ApiClient.generateAttendanceQr(Number(target));
+      if (seq !== this._qrRequestSeq) return; // stale response — newer selection exists
+       this.qrState = {
         status: 'active',
         token: data.qr_token || '',
         exp: Number(data.exp || 0),
-        groupId: String(groupId),
+        groupId: target,
         message: ''
       };
     } catch (error) {
-      this.qrState.status = 'error';
-      this.qrState.message = this.describeApiError(error).message;
+      if (seq !== this._qrRequestSeq) return; // stale error — ignore
+      this.qrState = { status: 'error', token: '', exp: 0, groupId: target, message: this.describeApiError(error).message };
     }
 
     if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
   }
 
-  /** P1-G: countdown from the server `exp` + auto-renew while the screen is open */
-  startQrCountdown() {
+  /**
+   * P1-G: group switch handler (fires on the shared selector's change event).
+   * Stops the old countdown, closes the enlarged view, clears the old QR, then
+   * immediately generates a fresh 45s QR for the newly selected group. The
+   * selector stays usable in every screen state — no page reload required.
+   */
+  handleQrGroupChange(value) {
+    const groups = this.data.groups || [];
+    const valid = value !== '' && value !== null && value !== undefined &&
+      groups.some(g => String(g.id) === String(value));
+
+    if (!valid) {
+      // No group selected — never call the API; invalidate any in-flight
+      // request so it cannot land afterwards.
+      this._qrRequestSeq += 1;
+      this._qrPendingGroup = '';
+      this.stopQrCountdown();
+      this.closeQrPresentation();
+      this.qrState = { status: 'idle', token: '', exp: 0, groupId: '', message: 'يرجى اختيار مجموعة أولاً' };
+      if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
+      return;
+    }
+
+    if (this.qrState.status === 'idle') {
+      // Idle flow: just store the selection — the "توليد رمز الحضور" button
+      // starts generation (and clears any previous validation message).
+      this.qrState.groupId = String(value);
+      if (this.qrState.message) {
+        this.qrState.message = '';
+        if (this.activeTab === 'attendance' && this.attendanceMethod === 'dynamic_qr') this.render();
+      }
+      return;
+    }
+
+    // Active/expired/error/loading: switching the group immediately stops the
+    // old countdown, clears the old QR and generates a fresh 45s QR for the
+    // newly selected group — no page reload.
+    this.stopQrCountdown();
+    this.closeQrPresentation();
+    this.generateQr(String(value));
+  }
+
+  /** P1-G: stop the countdown timer (safe to call when no timer is running). */
+  stopQrCountdown() {
     if (this._qrTimer) {
       clearInterval(this._qrTimer);
       this._qrTimer = null;
     }
+  }
+
+  /** P1-G: countdown from the server `exp` + auto-renew while the screen is open */
+  startQrCountdown() {
+    this.stopQrCountdown();
     if (this.qrState.status !== 'active') return;
 
     const tick = () => {
@@ -1162,10 +1284,129 @@ class TeacherController {
       const qr = qrcode(0, 'M');
       qr.addData(this.qrState.token);
       qr.make();
-      qrContainer.innerHTML = qr.createSvgTag(5, 2);
+
+      const avail = this._qrAvailableSize(qrContainer);
+      qrContainer.__qrAvail = avail;
+
+      // Target rendered size: the wrapper's available square when measurable.
+      // If the wrapper (or the whole layout) measures 0/unknown — e.g. an older
+      // stylesheet is cached, layout hasn't run, or the element is hidden — fall
+      // back to ~90% of the outer white box (which has explicit dimensions in
+      // EVERY shipped CSS version). The QR can therefore never collapse to a
+      // tiny intrinsic size again.
+      let renderSize = avail;
+      if (renderSize < 65) {
+        const box = qrContainer.parentElement;
+        const boxW = box ? box.clientWidth : 0;
+        renderSize = Math.max(0, Math.round((boxW > 0 ? boxW : 240) * 0.9));
+      }
+
+      const moduleCount = qr.getModuleCount();
+      const quietModules = 4; // QR spec minimum quiet zone — never cropped
+      const cellSize = Math.max(1, Math.floor(renderSize / (moduleCount + quietModules * 2)));
+      // Use ALL leftover space as extra quiet-zone margin so the SVG's natural
+      // size matches the target (~90% of the box) — zero scaling, integer
+      // module pixels, crisp at every device-pixel ratio and decodable by
+      // every scanner.
+      const margin = Math.max(
+        cellSize * quietModules,
+        Math.floor((renderSize - cellSize * moduleCount) / 2)
+      );
+      const naturalSize = cellSize * moduleCount + margin * 2;
+
+      qrContainer.innerHTML = qr.createSvgTag(cellSize, margin);
+
+      const svg = qrContainer.querySelector('svg');
+      if (svg) {
+        // Presentation-critical sizing/centering is applied INLINE (inline
+        // styles beat any stylesheet) so the QR stays LARGE and centered even
+        // when a cached/older stylesheet is served, another rule overrides
+        // qr.css, or a browser fails to resolve percentage heights on inline
+        // SVGs.
+        qrContainer.style.display = 'flex';
+        qrContainer.style.alignItems = 'center';
+        qrContainer.style.justifyContent = 'center';
+        const box = qrContainer.parentElement;
+        if (box && box.classList && box.classList.contains('dynamic-qr-box')) {
+          qrContainer.style.height = '100%'; // only the fixed-height QR box
+        }
+
+        svg.style.display = 'block';
+        svg.style.margin = '0 auto';
+        svg.style.maxWidth = '100%';
+        svg.style.maxHeight = '100%';
+        if (naturalSize >= 65) {
+          // Render at the SVG's NATURAL size (its own viewBox dimensions):
+          // every module lands on an integer pixel boundary — sharp, square,
+          // never scaled/cropped, and the whole QR (quiet zone included) fits
+          // the available square. Falls back to the target size in the rare
+          // case the natural size would exceed the available area.
+          const px = Math.min(naturalSize, renderSize);
+          svg.style.width = px + 'px';
+          svg.style.height = px + 'px';
+        }
+      }
+
+      this._observeQrContainer(qrContainer);
     } catch (e) {
       qrContainer.textContent = '';
     }
+  }
+
+  /**
+   * Available square area (content box) for the QR inside its wrapper.
+   * The wrapper may be an empty auto-height element at render time when an
+   * older stylesheet is served (or layout hasn't run yet) — in that case its
+   * clientHeight is 0, which previously collapsed the QR to 65px. Fall back
+   * to the outer box, which has explicit dimensions in every shipped CSS
+   * version, so the QR can never become tiny.
+   */
+  _qrAvailableSize(qrContainer) {
+    const contentBox = (el) => {
+      if (!el) return 0;
+      const cs = window.getComputedStyle(el);
+      const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      return Math.min(
+        Math.max(0, el.clientWidth - padX),
+        Math.max(0, el.clientHeight - padY)
+      );
+    };
+    let avail = contentBox(qrContainer);
+    if (avail < 65 && qrContainer.parentElement) {
+      const parentAvail = contentBox(qrContainer.parentElement);
+      if (parentAvail >= 65) avail = parentAvail;
+    }
+    // Never exceed the wrapper's own width (caps the parent fallback when the
+    // wrapper is narrower than the outer box, e.g. the box's padding).
+    const wrapperW = qrContainer.clientWidth || 0;
+    if (wrapperW > 0 && avail > wrapperW) avail = wrapperW;
+    return avail;
+  }
+
+  /** Re-fit the QR inside `qrContainer` whenever its box size changes. */
+  _observeQrContainer(qrContainer) {
+    const box = qrContainer.parentElement || qrContainer;
+    const reflow = () => {
+      if (!box.isConnected || !qrContainer.isConnected) return;
+      const avail = this._qrAvailableSize(qrContainer);
+      if (avail === qrContainer.__qrAvail) return; // size unchanged
+      this.renderQrInto(qrContainer);
+    };
+    try {
+      if (typeof ResizeObserver !== 'undefined') {
+        if (qrContainer.__qrObserver) qrContainer.__qrObserver.disconnect();
+        const observer = new ResizeObserver(reflow);
+        qrContainer.__qrObserver = observer;
+        observer.observe(box);
+      } else if (qrContainer.__qrResizeHandler !== reflow) {
+        if (qrContainer.__qrResizeHandler) {
+          window.removeEventListener('resize', qrContainer.__qrResizeHandler);
+        }
+        qrContainer.__qrResizeHandler = reflow;
+        window.addEventListener('resize', reflow);
+      }
+    } catch (e) { /* no-op */ }
   }
 
   renderQrGraphic() {
@@ -1260,11 +1501,14 @@ class TeacherController {
       });
     });
 
-    // P1-G: dynamic QR screen wiring (generate / refresh / retry / countdown)
+    // P1-G: dynamic QR screen wiring (generate / refresh / retry / countdown).
+    // The selector is present in every screen state; changing the group stops
+    // the old countdown, clears the old QR and generates a fresh one for the
+    // newly selected group (no page reload).
     const qrGroupSelect = document.getElementById('qr-group-select');
     if (qrGroupSelect) {
       qrGroupSelect.addEventListener('change', (e) => {
-        this.qrState.groupId = e.target.value;
+         this.handleQrGroupChange(e.target.value);
       });
     }
     const btnGenerateQr = document.getElementById('btn-generate-qr');
