@@ -356,18 +356,20 @@ $studentId = (int)($input['student_id'] ?? 0);
 $studentCode = Helper::sanitizeString($input['student_code'] ?? '');
 $method = Helper::sanitizeString($input['method'] ?? 'manual');
 $status = Helper::sanitizeString($input['status'] ?? 'present');
-$arrivalTime = Helper::sanitizeString($input['arrival_time'] ?? date('h:i A'));
 $lateMinutes = (int)($input['late_minutes'] ?? 0);
 $notes = Helper::sanitizeString($input['notes'] ?? 'تم التسجيل عبر المنصة');
 
-// Validate status
+// P1-H Fix 5: status must match the attendance_records ENUM exactly.
 $validStatuses = ['present', 'absent', 'late'];
 if (!in_array($status, $validStatuses, true)) {
     Helper::sendJson(['success' => false, 'message' => 'Invalid status value'], 400);
 }
 
-// Validate method
-$validMethods = ['dynamic_qr', 'id_scanner', 'manual'];
+// P1-H Fix 4: Methods 2 & 3 are the ONLY methods accepted by this record
+// branch. Dynamic QR is handled exclusively by its own dedicated validation
+// branch above (student role) and is never routed here, so arbitrary method
+// strings can never reach the INSERT.
+$validMethods = ['id_scanner', 'manual'];
 if (!in_array($method, $validMethods, true)) {
     Helper::sendJson(['success' => false, 'message' => 'Invalid method value'], 400);
 }
@@ -375,7 +377,7 @@ if (!in_array($method, $validMethods, true)) {
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
 
-    // If student_code is provided instead of ID (Scanner Mode 2)
+    // Method 2: if student_code is provided instead of ID (Scanner Mode 2)
     if ($studentId <= 0 && $studentCode !== '') {
         $stmtFind = $db->prepare('SELECT id FROM students WHERE student_code = :code LIMIT 1');
         $stmtFind->execute(['code' => $studentCode]);
@@ -390,24 +392,50 @@ try {
         Helper::sendJson(['success' => false, 'message' => 'Student ID or student code is required'], 422);
     }
 
-    // SECURITY: Verify the student belongs to this teacher (for teacher/staff roles)
-    if ($user['role'] === 'teacher' || $user['role'] === 'staff') {
-        $stmtVerify = $db->prepare('SELECT group_id FROM student_enrollments WHERE teacher_id = :tid AND student_id = :sid LIMIT 1');
-        $stmtVerify->execute(['tid' => $teacherId, 'sid' => $studentId]);
-        $enr = $stmtVerify->fetch();
-        
-        if ($enr === false) {
-            Helper::sendForbidden('Access denied');
-        }
-        $groupId = (int)$enr['group_id'];
-    } else {
-        // For super_admin, just get the group_id
-        $stmtGrp = $db->prepare('SELECT group_id FROM student_enrollments WHERE teacher_id = :tid AND student_id = :sid LIMIT 1');
-        $stmtGrp->execute(['tid' => $teacherId, 'sid' => $studentId]);
-        $enr = $stmtGrp->fetch();
-        $groupId = $enr ? (int)$enr['group_id'] : 1;
+    // P1-H: Transaction + row lock. Locking the enrollment row serializes
+    // concurrent submissions for the SAME student+teacher, so the duplicate
+    // check below cannot race with a concurrent INSERT (a bare SELECT->INSERT
+    // would let two simultaneous requests both pass the check and insert).
+    // super_admin is already rejected above; only teacher/staff reach here.
+    $db->beginTransaction();
+
+    // P1-H Fix 2: the student must be enrolled with THIS teacher (session
+    // tenant) AND the enrollment must be active. Missing enrollment,
+    // inactive enrollment and cross-tenant students all fail with 403.
+    $stmtEnr = $db->prepare('
+        SELECT group_id FROM student_enrollments
+        WHERE teacher_id = :tid AND student_id = :sid AND status = \'active\'
+        LIMIT 1 FOR UPDATE
+    ');
+    $stmtEnr->execute(['tid' => $teacherId, 'sid' => $studentId]);
+    $enr = $stmtEnr->fetch();
+    if ($enr === false) {
+        $db->rollBack();
+        Helper::sendForbidden('الطالب غير مسجل حاليًا في مجموعة نشطة');
+    }
+    $groupId = (int)$enr['group_id'];
+
+    // P1-H Fix 1: one attendance record per student per day (same rule as the
+    // Dynamic QR branch). Returns a safe success response with
+    // already_recorded=true so the UI informs the teacher — not an exception.
+    $stmtDup = $db->prepare('
+        SELECT id FROM attendance_records
+        WHERE teacher_id = :tid AND student_id = :sid AND date = CURRENT_DATE()
+        LIMIT 1
+    ');
+    $stmtDup->execute(['tid' => $teacherId, 'sid' => $studentId]);
+    if ($stmtDup->fetch() !== false) {
+        $db->rollBack();
+        Helper::sendJson([
+            'success' => true,
+            'already_recorded' => true,
+            'message' => 'تم تسجيل الحضور بالفعل اليوم'
+        ]);
     }
 
+    // P1-H Fix 3: server-authoritative date/time. date is always
+    // CURRENT_DATE() and arrival_time is always the server clock — any
+    // client-supplied date / arrival_time / departure_time is ignored.
     $stmtInsert = $db->prepare('
         INSERT INTO attendance_records 
             (teacher_id, student_id, group_id, date, status, arrival_time, departure_time, late_minutes, method, notes)
@@ -419,20 +447,26 @@ try {
         'sid' => $studentId,
         'gid' => $groupId,
         'status' => $status,
-        'arrival' => $arrivalTime,
+        'arrival' => date('h:i A'),
         'latem' => $lateMinutes,
         'method' => $method,
         'notes' => $notes
     ]);
 
+    $attendanceId = (int)$db->lastInsertId();
+    $db->commit();
+
     Helper::sendJson([
         'success' => true,
-        'message' => 'تم تسجيل الحضور بنجاح عبر الطريقة: ' . ($method === 'dynamic_qr' ? 'الـ QR المتغير (1)' : ($method === 'id_scanner' ? 'الـ Scanner (2)' : 'اليدوي (3)')),
-        'attendance_id' => (int)$db->lastInsertId()
+        'message' => 'تم تسجيل الحضور بنجاح عبر الطريقة: ' . ($method === 'id_scanner' ? 'الـ Scanner (2)' : 'اليدوي (3)'),
+        'attendance_id' => $attendanceId
     ]);
 
 } catch (Throwable $exception) {
     // P1-G: generic message only — never expose SQL/stack trace/internals
+    if (isset($db) && $db->inTransaction()) {
+        $db->rollBack();
+    }
     Helper::sendJson([
         'success' => false,
         'error' => 'حدث خطأ غير متوقع أثناء تسجيل الحضور'
