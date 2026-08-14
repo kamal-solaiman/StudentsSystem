@@ -5,6 +5,81 @@ require_once __DIR__ . '/../config/helper.php';
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/auth.php';
 
+/**
+ * Academic-class catalog shared by GET normalization and POST validation.
+ * `academic_classes.level` is intentionally reused for the educational stage;
+ * only `grade` is added by the focused migration.
+ */
+function teacherAcademicClassCatalog(): array
+{
+    return [
+        'primary' => [
+            'adjective' => 'الابتدائي',
+            'grades' => ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'],
+        ],
+        'preparatory' => [
+            'adjective' => 'الإعدادي',
+            'grades' => ['first', 'second', 'third'],
+        ],
+        'secondary' => [
+            'adjective' => 'الثانوي',
+            'grades' => ['first', 'second', 'third'],
+        ],
+        // The pre-existing "general" category is unrestricted by a specific
+        // school cycle, so it uses the existing first–sixth grade vocabulary.
+        'general' => [
+            'adjective' => 'العام',
+            'grades' => ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'],
+        ],
+    ];
+}
+
+function teacherAcademicGradeLabels(): array
+{
+    return [
+        'first' => 'الأول',
+        'second' => 'الثاني',
+        'third' => 'الثالث',
+        'fourth' => 'الرابع',
+        'fifth' => 'الخامس',
+        'sixth' => 'السادس',
+    ];
+}
+
+/** Normalize known pre-migration level codes without changing row IDs/names. */
+function teacherAcademicClassParts(string $level, ?string $grade): array
+{
+    $legacy = [
+        'prep_1' => ['preparatory', 'first'],
+        'prep_2' => ['preparatory', 'second'],
+        'prep_3' => ['preparatory', 'third'],
+        'sec_1' => ['secondary', 'first'],
+        'sec_2' => ['secondary', 'second'],
+        'sec_3' => ['secondary', 'third'],
+    ];
+    if (($grade === null || $grade === '') && isset($legacy[$level])) {
+        [$level, $grade] = $legacy[$level];
+    }
+
+    $catalog = teacherAcademicClassCatalog();
+    $valid = isset($catalog[$level])
+        && is_string($grade)
+        && in_array($grade, $catalog[$level]['grades'], true);
+
+    return [
+        'educational_stage' => $valid ? $level : null,
+        'grade' => $valid ? $grade : null,
+        'valid' => $valid,
+    ];
+}
+
+function teacherAcademicClassName(string $educationalStage, string $grade): string
+{
+    $catalog = teacherAcademicClassCatalog();
+    $gradeLabels = teacherAcademicGradeLabels();
+    return 'الصف ' . $gradeLabels[$grade] . ' ' . $catalog[$educationalStage]['adjective'];
+}
+
 Helper::handleCorsOptions();
 
 // SECURITY: Require authentication for all teacher endpoints
@@ -23,13 +98,15 @@ if ($user['role'] === 'staff') {
 // SECURITY: Verify CSRF token for state-changing methods
 if (in_array($_SERVER['REQUEST_METHOD'], ['POST', 'DELETE'], true)) {
     $input = Helper::getJsonInput();
-    $csrfToken = $input['csrf_token'] ?? null;
-    
+    $csrfRaw = $input['csrf_token'] ?? null;
+    $csrfToken = is_string($csrfRaw) ? $csrfRaw : null;
+
     // Also check header for CSRF token
     if ($csrfToken === null || $csrfToken === '') {
-        $csrfToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+        $headerToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+        $csrfToken = is_string($headerToken) ? $headerToken : null;
     }
-    
+
     if (!AuthManager::validateCsrfToken($csrfToken)) {
         Helper::sendForbidden('Invalid CSRF token');
     }
@@ -75,7 +152,33 @@ try {
             ORDER BY ac.id ASC
         ');
         $stmtClasses->execute(['tid' => $teacherId]);
-        $classes = $stmtClasses->fetchAll();
+        $classesRaw = $stmtClasses->fetchAll();
+        $classes = [];
+        foreach ($classesRaw as $row) {
+            $parts = teacherAcademicClassParts(
+                (string)($row['level'] ?? ''),
+                isset($row['grade']) ? (string)$row['grade'] : null
+            );
+            $canonicalName = $parts['valid']
+                ? teacherAcademicClassName($parts['educational_stage'], $parts['grade'])
+                : (string)$row['name'];
+            $classes[] = [
+                'id' => (int)$row['id'],
+                'teacher_id' => (int)$row['teacher_id'],
+                // Structured rows always expose the deterministic canonical
+                // display name. Unknown legacy rows retain their original name.
+                'name' => $canonicalName,
+                'educational_stage' => $parts['educational_stage'],
+                'grade' => $parts['grade'],
+                // Keep level in the response for older consumers; for all new
+                // rows it now means educational stage, not stage+grade.
+                'level' => $parts['educational_stage'] ?? (string)$row['level'],
+                'description' => $row['description'] === null ? null : (string)$row['description'],
+                'groups_count' => (int)$row['groups_count'],
+                'created_at' => (string)$row['created_at'],
+                'is_legacy' => !$parts['valid'],
+            ];
+        }
 
         // Study Groups
         $stmtGroups = $db->prepare('
@@ -192,8 +295,14 @@ try {
 
     // POST: Create Class, Study Group, Add Student, or Update Settings
     if ($method === 'POST') {
-        $input = Helper::getJsonInput();
-        $action = Helper::sanitizeString($input['action'] ?? '');
+        // Reuse the same parsed body that passed CSRF validation instead of
+        // performing a second, unnecessary php://input read.
+        $input = isset($input) && is_array($input) ? $input : Helper::getJsonInput();
+        $actionRaw = $input['action'] ?? '';
+        if (!is_string($actionRaw)) {
+            Helper::sendJson(['success' => false, 'error' => 'صيغة الطلب غير صالحة'], 400);
+        }
+        $action = Helper::sanitizeString($actionRaw);
         $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
 
         // SECURITY: For staff, check specific permission for each action
@@ -210,85 +319,92 @@ try {
             }
         }
 
-        // ---- P1-I: shared validation helpers for Academic Classes ----
-        // Character-aware length check with byte fallback: when mbstring is
-        // missing, utf8mb4 encodes at most 4 bytes per character, so a byte
-        // limit of 4×chars can never accept more characters than the column.
+        // Count Unicode characters even when the optional mbstring extension
+        // is unavailable; JSON input is UTF-8 and PCRE is part of PHP core.
         $textLen = static function (string $s): int {
-            return function_exists('mb_strlen') ? mb_strlen($s, 'UTF-8') : strlen($s);
+            if (function_exists('mb_strlen')) {
+                return mb_strlen($s, 'UTF-8');
+            }
+            // More than 4 bytes per allowed character is already over limit;
+            // cap work before building the small PCRE match array.
+            if (strlen($s) > 4000) {
+                return 1001;
+            }
+            $count = preg_match_all('/./us', $s, $matches);
+            return $count === false ? strlen($s) : $count;
         };
-        $lenLimit = static function (int $chars) use ($textLen): int {
-            return function_exists('mb_strlen') ? $chars : $chars * 4;
-        };
 
-        // Create Academic Class
-        // SECURITY (P1-I): teacher ownership ALWAYS comes from the session
-        // tenant ($teacherId). A client-supplied teacher_id is never accepted.
-        if ($action === 'create_class') {
-            // name: required, string, trimmed, non-empty, <= 150 chars
-            if (!is_string($payload['name'] ?? null)) {
-                Helper::sendJson(['success' => false, 'error' => 'اسم الصف غير صالح'], 400);
+        // Backend-authoritative academic class validation. The submitted name
+        // and teacher_id (if any) are deliberately ignored; both are derived.
+        $validateClassPayload = static function (array $classPayload) use ($textLen): array {
+            $stageRaw = $classPayload['educational_stage'] ?? null;
+            if (!is_string($stageRaw)) {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة التعليمية غير صالحة'], 400);
             }
-            $name = Helper::sanitizeString($payload['name']);
-            if ($name === '') {
-                Helper::sendJson(['success' => false, 'error' => 'اسم الصف مطلوب'], 400);
-            }
-            if ($textLen($name) > $lenLimit(150)) {
-                Helper::sendJson(['success' => false, 'error' => 'اسم الصف طويل جداً (الحد الأقصى 150 حرفاً)'], 400);
+            $stage = trim($stageRaw);
+            $catalog = teacherAcademicClassCatalog();
+            if (!isset($catalog[$stage])) {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة التعليمية غير صالحة'], 400);
             }
 
-            // level: required per schema (VARCHAR(50) NOT NULL)
-            if (!is_string($payload['level'] ?? null)) {
-                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية غير صالحة'], 400);
+            $gradeRaw = $classPayload['grade'] ?? null;
+            if (!is_string($gradeRaw)) {
+                Helper::sendJson(['success' => false, 'error' => 'الصف الدراسي غير صالح'], 400);
             }
-            $level = Helper::sanitizeString($payload['level']);
-            if ($level === '') {
-                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية مطلوبة'], 400);
-            }
-            if ($textLen($level) > $lenLimit(50)) {
-                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية طويلة جداً (الحد الأقصى 50 حرفاً)'], 400);
+            $grade = trim($gradeRaw);
+            if (!in_array($grade, $catalog[$stage]['grades'], true)) {
+                Helper::sendJson(['success' => false, 'error' => 'الصف الدراسي غير متاح للمرحلة التعليمية المحددة'], 400);
             }
 
-            // description: optional (TEXT NULL)
-            $descRaw = $payload['description'] ?? '';
+            $descRaw = $classPayload['description'] ?? '';
             if ($descRaw !== null && !is_string($descRaw)) {
                 Helper::sendJson(['success' => false, 'error' => 'الوصف غير صالح'], 400);
             }
-            $desc = $descRaw === null ? '' : Helper::sanitizeString($descRaw);
-            if ($textLen($desc) > $lenLimit(1000)) {
+            $description = $descRaw === null ? '' : Helper::sanitizeString($descRaw);
+            if ($textLen($description) > 1000) {
                 Helper::sendJson(['success' => false, 'error' => 'الوصف طويل جداً (الحد الأقصى 1000 حرف)'], 400);
             }
 
+            return [
+                'educational_stage' => $stage,
+                'grade' => $grade,
+                'name' => teacherAcademicClassName($stage, $grade),
+                'description' => $description === '' ? null : $description,
+            ];
+        };
+
+        // Create Academic Class. teacher_id comes only from tenant_teacher_id.
+        if ($action === 'create_class') {
+            $class = $validateClassPayload($payload);
             $stmt = $db->prepare('
-                INSERT INTO academic_classes (teacher_id, name, level, description)
-                VALUES (:tid, :name, :level, :descr)
+                INSERT INTO academic_classes (teacher_id, name, level, grade, description)
+                VALUES (:tid, :name, :level, :grade, :descr)
             ');
             $stmt->execute([
                 'tid' => $teacherId,
-                'name' => $name,
-                'level' => $level,
-                'descr' => $desc === '' ? null : $desc
+                'name' => $class['name'],
+                'level' => $class['educational_stage'],
+                'grade' => $class['grade'],
+                'descr' => $class['description'],
             ]);
 
-            Helper::sendJson(['success' => true, 'message' => 'تم إضافة الصف الدراسي بنجاح', 'id' => (int)$db->lastInsertId()]);
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم إضافة الصف الدراسي بنجاح',
+                'id' => (int)$db->lastInsertId(),
+                'name' => $class['name'],
+            ]);
         }
 
-        // Update Academic Class
-        // SECURITY (P1-I): ownership-aware UPDATE. 404 when the class does not
-        // exist, 403 when it belongs to another teacher. No IDOR.
+        // Ownership-aware UPDATE. 404 if absent, 403 if another tenant owns it.
         if ($action === 'update_class') {
-            // Reject malformed ids (arrays, floats, non-numeric strings)
-            // instead of letting a cast silently coerce them to 1.
             $idRaw = $payload['id'] ?? null;
             $idIsValid = is_int($idRaw)
                 || (is_string($idRaw) && $idRaw !== '' && ctype_digit($idRaw));
-            if (!$idIsValid) {
+            if (!$idIsValid || (int)$idRaw <= 0) {
                 Helper::sendJson(['success' => false, 'error' => 'معرف الصف غير صالح'], 400);
             }
             $classId = (int)$idRaw;
-            if ($classId <= 0) {
-                Helper::sendJson(['success' => false, 'error' => 'معرف الصف غير صالح'], 400);
-            }
 
             $stmtExists = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid LIMIT 1');
             $stmtExists->execute(['cid' => $classId]);
@@ -302,54 +418,26 @@ try {
                 Helper::sendForbidden('Access denied');
             }
 
-            // name: required, string, trimmed, non-empty, <= 150 chars
-            if (!is_string($payload['name'] ?? null)) {
-                Helper::sendJson(['success' => false, 'error' => 'اسم الصف غير صالح'], 400);
-            }
-            $name = Helper::sanitizeString($payload['name']);
-            if ($name === '') {
-                Helper::sendJson(['success' => false, 'error' => 'اسم الصف مطلوب'], 400);
-            }
-            if ($textLen($name) > $lenLimit(150)) {
-                Helper::sendJson(['success' => false, 'error' => 'اسم الصف طويل جداً (الحد الأقصى 150 حرفاً)'], 400);
-            }
-
-            // level: required per schema (VARCHAR(50) NOT NULL)
-            if (!is_string($payload['level'] ?? null)) {
-                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية غير صالحة'], 400);
-            }
-            $level = Helper::sanitizeString($payload['level']);
-            if ($level === '') {
-                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية مطلوبة'], 400);
-            }
-            if ($textLen($level) > $lenLimit(50)) {
-                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية طويلة جداً (الحد الأقصى 50 حرفاً)'], 400);
-            }
-
-            // description: optional (TEXT NULL)
-            $descRaw = $payload['description'] ?? '';
-            if ($descRaw !== null && !is_string($descRaw)) {
-                Helper::sendJson(['success' => false, 'error' => 'الوصف غير صالح'], 400);
-            }
-            $desc = $descRaw === null ? '' : Helper::sanitizeString($descRaw);
-            if ($textLen($desc) > $lenLimit(1000)) {
-                Helper::sendJson(['success' => false, 'error' => 'الوصف طويل جداً (الحد الأقصى 1000 حرف)'], 400);
-            }
-
+            $class = $validateClassPayload($payload);
             $stmt = $db->prepare('
                 UPDATE academic_classes
-                SET name = :name, level = :level, description = :descr
+                SET name = :name, level = :level, grade = :grade, description = :descr
                 WHERE id = :cid AND teacher_id = :tid
             ');
             $stmt->execute([
                 'tid' => $teacherId,
                 'cid' => $classId,
-                'name' => $name,
-                'level' => $level,
-                'descr' => $desc === '' ? null : $desc
+                'name' => $class['name'],
+                'level' => $class['educational_stage'],
+                'grade' => $class['grade'],
+                'descr' => $class['description'],
             ]);
 
-            Helper::sendJson(['success' => true, 'message' => 'تم تحديث الصف الدراسي بنجاح']);
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم تحديث الصف الدراسي بنجاح',
+                'name' => $class['name'],
+            ]);
         }
 
         // Create Study Group
@@ -537,8 +625,11 @@ try {
 
     // DELETE: Delete class or group
     if ($method === 'DELETE') {
-        $entity = Helper::sanitizeString($_GET['entity'] ?? '');
-        $id = (int)($_GET['id'] ?? 0);
+        $entityRaw = $_GET['entity'] ?? '';
+        $entity = is_string($entityRaw) ? Helper::sanitizeString($entityRaw) : '';
+        $idRaw = $_GET['id'] ?? null;
+        $idIsValid = is_string($idRaw) && $idRaw !== '' && ctype_digit($idRaw);
+        $id = $idIsValid ? (int)$idRaw : 0;
 
         // SECURITY: For staff, check specific permission for each entity
         if ($user['role'] === 'staff') {

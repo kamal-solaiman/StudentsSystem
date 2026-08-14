@@ -26,7 +26,8 @@ class AppModal {
    * @param {Array}    [options.fields] field specs:
    *   { name, label, type: 'text'|'number'|'date'|'select'|'textarea'|'checklist',
    *     required, min, max, value, placeholder, rows,
-   *     options: [{value,label,checked}], emptyText }
+   *     options: [{value,label,checked}] | (values => options), emptyText }
+   * @param {Object}   [options.preview] { label, render(values) }
    * @param {string}   [options.submitLabel]
    * @param {string}   [options.cancelLabel]
    * @param {Function} options.onSubmit async (values) => void.
@@ -89,6 +90,36 @@ class AppModal {
     (this.options.fields || []).forEach(spec => {
       body.appendChild(this._buildField(spec));
     });
+
+    /* Optional read-only derived-value preview (always textContent/XSS-safe). */
+    if (this.options.preview && typeof this.options.preview.render === 'function') {
+      const previewGroup = document.createElement('div');
+      previewGroup.className = 'form-group';
+      previewGroup.style.marginBottom = '1rem';
+
+      const previewLabel = document.createElement('span');
+      previewLabel.className = 'form-label';
+      previewLabel.textContent = this.options.preview.label || 'معاينة';
+
+      this.previewValue = document.createElement('div');
+      this.previewValue.setAttribute('aria-live', 'polite');
+      this.previewValue.style.cssText = 'background:#f8fafc;border:1px solid #cbd5e1;border-radius:0.5rem;padding:0.75rem;font-weight:800;color:#0f172a;min-height:2.75rem;';
+      previewGroup.append(previewLabel, this.previewValue);
+      body.appendChild(previewGroup);
+    }
+
+    // Function-valued select options support dependent fields (for example,
+    // restricting grades after the educational stage changes).
+    this.fields.forEach(({ control }) => {
+      if (!control || typeof control.addEventListener !== 'function') return;
+      control.addEventListener('change', () => {
+        this._refreshDynamicFields();
+        this._updatePreview();
+      });
+      control.addEventListener('input', () => this._updatePreview());
+    });
+    this._refreshDynamicFields();
+    this._updatePreview();
 
     /* Inline error box (hidden until needed) */
     this.errorBox = document.createElement('div');
@@ -153,15 +184,7 @@ class AppModal {
       control = document.createElement('select');
       control.name = spec.name;
       control.className = 'form-control';
-      (spec.options || []).forEach(opt => {
-        const o = document.createElement('option');
-        o.value = String(opt.value);
-        o.textContent = opt.label;
-        if (String(spec.value) === String(opt.value)) {
-          o.selected = true;
-        }
-        control.appendChild(o);
-      });
+      this._setSelectOptions(control, this._getSelectOptions(spec), spec.value);
     } else if (spec.type === 'textarea') {
       control = document.createElement('textarea');
       control.name = spec.name;
@@ -211,6 +234,47 @@ class AppModal {
     this.fields.push({ spec, control });
     group.appendChild(control);
     return group;
+  }
+
+  _getSelectOptions(spec) {
+    if (typeof spec.options === 'function') {
+      const options = spec.options(this._collect());
+      return Array.isArray(options) ? options : [];
+    }
+    return Array.isArray(spec.options) ? spec.options : [];
+  }
+
+  _setSelectOptions(control, options, preferredValue) {
+    const preferred = preferredValue == null ? '' : String(preferredValue);
+    while (control.firstChild) control.removeChild(control.firstChild);
+    options.forEach(opt => {
+      const option = document.createElement('option');
+      option.value = String(opt.value);
+      option.textContent = opt.label;
+      if (option.value === preferred) option.selected = true;
+      control.appendChild(option);
+    });
+    if (preferred !== '' && options.some(opt => String(opt.value) === preferred)) {
+      control.value = preferred;
+    }
+  }
+
+  _refreshDynamicFields() {
+    this.fields.forEach(({ spec, control }) => {
+      if (spec.type !== 'select' || typeof spec.options !== 'function') return;
+      const currentValue = control.value;
+      const options = this._getSelectOptions(spec);
+      const preferred = options.some(opt => String(opt.value) === String(currentValue))
+        ? currentValue
+        : (options[0] ? options[0].value : '');
+      this._setSelectOptions(control, options, preferred);
+    });
+  }
+
+  _updatePreview() {
+    if (!this.previewValue || !this.options.preview) return;
+    const value = this.options.preview.render(this._collect());
+    this.previewValue.textContent = value == null || value === '' ? '—' : String(value);
   }
 
   /* ------------------------------------------------------------------ */
@@ -302,7 +366,11 @@ class AppModal {
     if (status === 422) return 'البيانات المدخلة غير صالحة';
     if (status === 429) return 'محاولات كثيرة — حاول بعد قليل';
     if (status && status >= 500) return 'حدث خطأ في الخادم — حاول مرة أخرى لاحقًا';
-    if (!status) return 'تعذر الاتصال بالخادم — تحقق من اتصالك بالإنترنت';
+    // Only ApiClient's explicit fetch/body-stream failure marker is a network
+    // error. A parse/application exception without an HTTP status is not.
+    if (error && error.isNetworkError === true) {
+      return 'تعذر الاتصال بالخادم — تحقق من اتصالك بالإنترنت';
+    }
     return 'حدث خطأ غير متوقع';
   }
 

@@ -31,14 +31,14 @@ INSERT INTO `teacher_staff` (`id`, `teacher_id`, `user_id`, `role_title`, `permi
 (1, 1, 4, 'secretary', '["attendance", "students", "groups", "exams", "reports", "classes", "settings", "parent"]')
 ON DUPLICATE KEY UPDATE `role_title` = VALUES(`role_title`);
 
--- 5. Academic Classes
-INSERT INTO `academic_classes` (`id`, `teacher_id`, `name`, `level`, `description`) VALUES
-(1, 1, 'ثالثة ثانوي (علمي)', 'sec_3', 'منهج الفيزياء الكامل للثانوية العامة الشعبة العلمية'),
-(2, 1, 'أولى ثانوي', 'sec_1', 'أساسيات الفيزياء الميكانيكية والحرارية'),
-(3, 1, 'أولى إعدادي', 'prep_1', 'مبادئ العلوم والفيزياء العامة'),
-(4, 2, 'ثالثة ثانوي (رياضيات)', 'sec_3', 'التفاضل والتكامل والجبر والهندسة الفراغية'),
-(5, 2, 'أولى ثانوي', 'sec_1', 'الجبر وحساب المثلثات والهندسة التحليلية')
-ON DUPLICATE KEY UPDATE `name` = VALUES(`name`);
+-- 5. Academic Classes (name is derived from educational stage + grade)
+INSERT INTO `academic_classes` (`id`, `teacher_id`, `name`, `level`, `grade`, `description`) VALUES
+(1, 1, 'الصف الثالث الثانوي', 'secondary', 'third', 'منهج الفيزياء الكامل للثانوية العامة الشعبة العلمية'),
+(2, 1, 'الصف الأول الثانوي', 'secondary', 'first', 'أساسيات الفيزياء الميكانيكية والحرارية'),
+(3, 1, 'الصف الأول الإعدادي', 'preparatory', 'first', 'مبادئ العلوم والفيزياء العامة'),
+(4, 2, 'الصف الثالث الثانوي', 'secondary', 'third', 'التفاضل والتكامل والجبر والهندسة الفراغية'),
+(5, 2, 'الصف الأول الثانوي', 'secondary', 'first', 'الجبر وحساب المثلثات والهندسة التحليلية')
+ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `level` = VALUES(`level`), `grade` = VALUES(`grade`);
 
 -- 6. Study Groups
 INSERT INTO `study_groups` (`id`, `teacher_id`, `class_id`, `name`, `study_days`, `class_time`, `shift`, `price`, `payment_scheme`) VALUES
