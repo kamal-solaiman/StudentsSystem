@@ -121,6 +121,25 @@ class ApiClient {
     return this.request(url, 'GET');
   }
 
+  /* ------------------------------------------------------------------ */
+  /* P1-I: Academic Classes CRUD (teacher tenant).                       */
+  /* Ownership is NEVER accepted from the client — the backend derives   */
+  /* teacher_id exclusively from the authenticated session tenant and    */
+  /* enforces 404/403/409 semantics server-side.                         */
+  /* ------------------------------------------------------------------ */
+
+  static async createClass(data) {
+    return this.request('teacher.php', 'POST', { action: 'create_class', payload: data });
+  }
+
+  static async updateClass(data) {
+    return this.request('teacher.php', 'POST', { action: 'update_class', payload: data });
+  }
+
+  static async deleteClass(id) {
+    return this.request(`teacher.php?entity=class&id=${encodeURIComponent(String(id))}`, 'DELETE');
+  }
+
   static async getStudentData(studentId = null) {
     const url = studentId ? `student.php?student_id=${studentId}` : 'student.php';
     return this.request(url, 'GET');

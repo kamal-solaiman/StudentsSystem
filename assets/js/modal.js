@@ -151,6 +151,7 @@ class AppModal {
 
     if (spec.type === 'select') {
       control = document.createElement('select');
+      control.name = spec.name;
       control.className = 'form-control';
       (spec.options || []).forEach(opt => {
         const o = document.createElement('option');
@@ -163,10 +164,12 @@ class AppModal {
       });
     } else if (spec.type === 'textarea') {
       control = document.createElement('textarea');
+      control.name = spec.name;
       control.className = 'form-control';
       control.rows = spec.rows || 3;
       if (spec.placeholder) control.placeholder = spec.placeholder;
       if (spec.value != null) control.value = String(spec.value);
+      if (spec.maxlength) control.maxLength = Number(spec.maxlength);
     } else if (spec.type === 'checklist') {
       control = document.createElement('div');
       control.style.cssText = 'max-height:180px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:0.5rem;padding:0.75rem;background:#f8fafc;';
@@ -193,9 +196,11 @@ class AppModal {
     } else {
       control = document.createElement('input');
       control.type = spec.type || 'text';
+      control.name = spec.name;
       control.className = 'form-control';
       if (spec.placeholder) control.placeholder = spec.placeholder;
       if (spec.value != null) control.value = String(spec.value);
+      if (spec.maxlength) control.maxLength = Number(spec.maxlength);
       if (spec.type === 'number') {
         if (spec.min != null) control.min = String(spec.min);
         if (spec.max != null) control.max = String(spec.max);
@@ -236,6 +241,9 @@ class AppModal {
       if (spec.required && text === '') {
         return { ok: false, message: `الحقل "${spec.label}" مطلوب` };
       }
+      if (text !== '' && spec.maxlength && text.length > Number(spec.maxlength)) {
+        return { ok: false, message: `الحقل "${spec.label}" لا يمكن أن يتجاوز ${spec.maxlength} حرفًا` };
+      }
       if (text !== '' && spec.type === 'number') {
         const num = Number(text);
         if (!Number.isFinite(num)) {
@@ -267,7 +275,7 @@ class AppModal {
     this.submitBtn.disabled = true;
     this.cancelBtn.disabled = true;
     this.submitBtn.setAttribute('aria-busy', 'true');
-    this.submitBtnLabel.textContent = 'جارٍ الحفظ...';
+    this.submitBtnLabel.textContent = this.options.loadingLabel || 'جارٍ الحفظ...';
 
     try {
       await this.options.onSubmit(result.values);
@@ -284,8 +292,12 @@ class AppModal {
 
   _describeError(error) {
     const status = error && error.status;
-    if (status === 401) return 'انتهت الجلسة — يرجى تسجيل الدخول مجددًا';
-    if (status === 403) return 'غير مصرح لك بتنفيذ هذا الإجراء';
+    // P1-I: for 409 the backend sends a safe, server-authored Arabic conflict
+    // message (e.g. class delete blocked by dependent data) — surface it.
+    if (status === 409) return (error && error.message) || 'تعذر إتمام العملية لوجود بيانات مرتبطة';
+    if (status === 401) return 'انتهت جلسة تسجيل الدخول';
+    if (status === 403) return 'ليس لديك صلاحية';
+    if (status === 400) return (error && error.message) || 'البيانات المدخلة غير صالحة';
     if (status === 404) return 'المورد المطلوب غير موجود';
     if (status === 422) return 'البيانات المدخلة غير صالحة';
     if (status === 429) return 'محاولات كثيرة — حاول بعد قليل';
