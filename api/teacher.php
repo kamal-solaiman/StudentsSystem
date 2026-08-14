@@ -197,8 +197,9 @@ try {
         $payload = is_array($input['payload'] ?? null) ? $input['payload'] : [];
 
         // SECURITY: For staff, check specific permission for each action
+        // P1-I: update_class is a classes operation, same 'classes' permission.
         if ($user['role'] === 'staff') {
-            if ($action === 'create_class' || $action === 'delete-class') {
+            if ($action === 'create_class' || $action === 'update_class' || $action === 'delete-class') {
                 AuthManager::requirePermission('classes');
             } elseif ($action === 'create_group' || $action === 'delete-group') {
                 AuthManager::requirePermission('groups');
@@ -209,11 +210,54 @@ try {
             }
         }
 
+        // ---- P1-I: shared validation helpers for Academic Classes ----
+        // Character-aware length check with byte fallback: when mbstring is
+        // missing, utf8mb4 encodes at most 4 bytes per character, so a byte
+        // limit of 4×chars can never accept more characters than the column.
+        $textLen = static function (string $s): int {
+            return function_exists('mb_strlen') ? mb_strlen($s, 'UTF-8') : strlen($s);
+        };
+        $lenLimit = static function (int $chars) use ($textLen): int {
+            return function_exists('mb_strlen') ? $chars : $chars * 4;
+        };
+
         // Create Academic Class
+        // SECURITY (P1-I): teacher ownership ALWAYS comes from the session
+        // tenant ($teacherId). A client-supplied teacher_id is never accepted.
         if ($action === 'create_class') {
-            $name = Helper::sanitizeString($payload['name'] ?? '');
-            $level = Helper::sanitizeString($payload['level'] ?? 'prep_1');
-            $desc = Helper::sanitizeString($payload['description'] ?? '');
+            // name: required, string, trimmed, non-empty, <= 150 chars
+            if (!is_string($payload['name'] ?? null)) {
+                Helper::sendJson(['success' => false, 'error' => 'اسم الصف غير صالح'], 400);
+            }
+            $name = Helper::sanitizeString($payload['name']);
+            if ($name === '') {
+                Helper::sendJson(['success' => false, 'error' => 'اسم الصف مطلوب'], 400);
+            }
+            if ($textLen($name) > $lenLimit(150)) {
+                Helper::sendJson(['success' => false, 'error' => 'اسم الصف طويل جداً (الحد الأقصى 150 حرفاً)'], 400);
+            }
+
+            // level: required per schema (VARCHAR(50) NOT NULL)
+            if (!is_string($payload['level'] ?? null)) {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية غير صالحة'], 400);
+            }
+            $level = Helper::sanitizeString($payload['level']);
+            if ($level === '') {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية مطلوبة'], 400);
+            }
+            if ($textLen($level) > $lenLimit(50)) {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية طويلة جداً (الحد الأقصى 50 حرفاً)'], 400);
+            }
+
+            // description: optional (TEXT NULL)
+            $descRaw = $payload['description'] ?? '';
+            if ($descRaw !== null && !is_string($descRaw)) {
+                Helper::sendJson(['success' => false, 'error' => 'الوصف غير صالح'], 400);
+            }
+            $desc = $descRaw === null ? '' : Helper::sanitizeString($descRaw);
+            if ($textLen($desc) > $lenLimit(1000)) {
+                Helper::sendJson(['success' => false, 'error' => 'الوصف طويل جداً (الحد الأقصى 1000 حرف)'], 400);
+            }
 
             $stmt = $db->prepare('
                 INSERT INTO academic_classes (teacher_id, name, level, description)
@@ -223,10 +267,89 @@ try {
                 'tid' => $teacherId,
                 'name' => $name,
                 'level' => $level,
-                'descr' => $desc
+                'descr' => $desc === '' ? null : $desc
             ]);
 
             Helper::sendJson(['success' => true, 'message' => 'تم إضافة الصف الدراسي بنجاح', 'id' => (int)$db->lastInsertId()]);
+        }
+
+        // Update Academic Class
+        // SECURITY (P1-I): ownership-aware UPDATE. 404 when the class does not
+        // exist, 403 when it belongs to another teacher. No IDOR.
+        if ($action === 'update_class') {
+            // Reject malformed ids (arrays, floats, non-numeric strings)
+            // instead of letting a cast silently coerce them to 1.
+            $idRaw = $payload['id'] ?? null;
+            $idIsValid = is_int($idRaw)
+                || (is_string($idRaw) && $idRaw !== '' && ctype_digit($idRaw));
+            if (!$idIsValid) {
+                Helper::sendJson(['success' => false, 'error' => 'معرف الصف غير صالح'], 400);
+            }
+            $classId = (int)$idRaw;
+            if ($classId <= 0) {
+                Helper::sendJson(['success' => false, 'error' => 'معرف الصف غير صالح'], 400);
+            }
+
+            $stmtExists = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid LIMIT 1');
+            $stmtExists->execute(['cid' => $classId]);
+            if ($stmtExists->fetch() === false) {
+                Helper::sendNotFound('الصف الدراسي غير موجود');
+            }
+
+            $stmtOwn = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+            $stmtOwn->execute(['cid' => $classId, 'tid' => $teacherId]);
+            if ($stmtOwn->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
+            // name: required, string, trimmed, non-empty, <= 150 chars
+            if (!is_string($payload['name'] ?? null)) {
+                Helper::sendJson(['success' => false, 'error' => 'اسم الصف غير صالح'], 400);
+            }
+            $name = Helper::sanitizeString($payload['name']);
+            if ($name === '') {
+                Helper::sendJson(['success' => false, 'error' => 'اسم الصف مطلوب'], 400);
+            }
+            if ($textLen($name) > $lenLimit(150)) {
+                Helper::sendJson(['success' => false, 'error' => 'اسم الصف طويل جداً (الحد الأقصى 150 حرفاً)'], 400);
+            }
+
+            // level: required per schema (VARCHAR(50) NOT NULL)
+            if (!is_string($payload['level'] ?? null)) {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية غير صالحة'], 400);
+            }
+            $level = Helper::sanitizeString($payload['level']);
+            if ($level === '') {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية مطلوبة'], 400);
+            }
+            if ($textLen($level) > $lenLimit(50)) {
+                Helper::sendJson(['success' => false, 'error' => 'المرحلة الدراسية طويلة جداً (الحد الأقصى 50 حرفاً)'], 400);
+            }
+
+            // description: optional (TEXT NULL)
+            $descRaw = $payload['description'] ?? '';
+            if ($descRaw !== null && !is_string($descRaw)) {
+                Helper::sendJson(['success' => false, 'error' => 'الوصف غير صالح'], 400);
+            }
+            $desc = $descRaw === null ? '' : Helper::sanitizeString($descRaw);
+            if ($textLen($desc) > $lenLimit(1000)) {
+                Helper::sendJson(['success' => false, 'error' => 'الوصف طويل جداً (الحد الأقصى 1000 حرف)'], 400);
+            }
+
+            $stmt = $db->prepare('
+                UPDATE academic_classes
+                SET name = :name, level = :level, description = :descr
+                WHERE id = :cid AND teacher_id = :tid
+            ');
+            $stmt->execute([
+                'tid' => $teacherId,
+                'cid' => $classId,
+                'name' => $name,
+                'level' => $level,
+                'descr' => $desc === '' ? null : $desc
+            ]);
+
+            Helper::sendJson(['success' => true, 'message' => 'تم تحديث الصف الدراسي بنجاح']);
         }
 
         // Create Study Group
@@ -427,9 +550,68 @@ try {
         }
 
         if ($entity === 'class' && $id > 0) {
-            $stmt = $db->prepare('DELETE FROM academic_classes WHERE id = :id AND teacher_id = :tid');
-            $stmt->execute(['id' => $id, 'tid' => $teacherId]);
-            Helper::sendJson(['success' => true, 'message' => 'تم حذف الصف بنجاح']);
+            // SECURITY (P1-B/P1-I): Never delete another teacher's class and
+            // never delete a class that still has dependent data. The class
+            // row is locked (FOR UPDATE) so a concurrent study_groups insert
+            // (which needs a shared lock on the parent row for its FK) cannot
+            // slip in between the dependency check and the DELETE.
+            $db->beginTransaction();
+            try {
+                $stmtOwn = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1 FOR UPDATE');
+                $stmtOwn->execute(['cid' => $id, 'tid' => $teacherId]);
+                if ($stmtOwn->fetch() === false) {
+                    $db->rollBack();
+                    // Distinguish 404 (class does not exist) from 403 (exists
+                    // but belongs to another teacher) per project convention.
+                    $stmtExists = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid LIMIT 1');
+                    $stmtExists->execute(['cid' => $id]);
+                    if ($stmtExists->fetch() === false) {
+                        Helper::sendNotFound('الصف الدراسي غير موجود');
+                    }
+                    Helper::sendForbidden('Access denied');
+                }
+
+                // SECURITY (P1-I): study_groups.class_id has ON DELETE CASCADE
+                // and student_enrollments / exams / question_bank reference
+                // class_id. If any dependent record exists, refuse with 409
+                // instead of cascade-deleting or orphaning production data.
+                // NOTE: PDO runs native prepares (ATTR_EMULATE_PREPARES=false),
+                // so a named placeholder cannot be reused — use one per column.
+                $stmtDeps = $db->prepare('
+                    SELECT
+                        (SELECT COUNT(*) FROM study_groups WHERE class_id = :cid1) AS group_count,
+                        (SELECT COUNT(*) FROM student_enrollments WHERE class_id = :cid2) AS enrollment_count,
+                        (SELECT COUNT(*) FROM exams WHERE class_id = :cid3) AS exam_count,
+                        (SELECT COUNT(*) FROM question_bank WHERE class_id = :cid4) AS question_count
+                ');
+                $stmtDeps->execute(['cid1' => $id, 'cid2' => $id, 'cid3' => $id, 'cid4' => $id]);
+                $deps = $stmtDeps->fetch();
+                $dependent = (int)($deps['group_count'] ?? 0)
+                    + (int)($deps['enrollment_count'] ?? 0)
+                    + (int)($deps['exam_count'] ?? 0)
+                    + (int)($deps['question_count'] ?? 0);
+                if ($dependent > 0) {
+                    $db->rollBack();
+                    Helper::sendJson([
+                        'success' => false,
+                        'message' => 'لا يمكن حذف هذا الصف الدراسي لوجود بيانات مرتبطة به (مجموعات دراسية، طلاب مسجلين، امتحانات أو أسئلة). احذف البيانات المرتبطة أولاً.'
+                    ], 409);
+                }
+
+                $stmt = $db->prepare('DELETE FROM academic_classes WHERE id = :id AND teacher_id = :tid');
+                $stmt->execute(['id' => $id, 'tid' => $teacherId]);
+                if ($stmt->rowCount() === 0) {
+                    $db->rollBack();
+                    Helper::sendNotFound('الصف الدراسي غير موجود');
+                }
+                $db->commit();
+            } catch (Throwable $ex) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                throw $ex;
+            }
+            Helper::sendJson(['success' => true, 'message' => 'تم حذف الصف الدراسي بنجاح']);
         }
 
         if ($entity === 'group' && $id > 0) {
@@ -444,8 +626,11 @@ try {
     Helper::sendJson(['success' => false, 'error' => 'طريقة الطلب غير مسموح بها'], 405);
 
 } catch (Throwable $exception) {
+    // SECURITY (P1-I): log full details server-side; NEVER expose SQL errors,
+    // exception messages, stack traces or filesystem paths to the frontend.
+    error_log('[teacher.php] ' . $exception->getMessage());
     Helper::sendJson([
         'success' => false,
-        'error' => 'خطأ في سيرفر لوحة المدرس: ' . $exception->getMessage()
+        'error' => 'خطأ في سيرفر لوحة المدرس'
     ], 500);
 }

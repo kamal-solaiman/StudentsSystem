@@ -1,6 +1,22 @@
 /**
  * JavaScript Controller for the 9 Mandatory Teacher Dashboard Pages
  */
+
+// P1-I: Academic class levels — display labels + modal select options.
+// The backend stores these as free-form VARCHAR(50) codes (see seed.sql),
+// so unknown values simply fall back to the raw stored value.
+const CLASS_LEVEL_OPTIONS = [
+  { value: 'prep_1', label: 'أولى إعدادي' },
+  { value: 'prep_2', label: 'ثانية إعدادي' },
+  { value: 'prep_3', label: 'ثالثة إعدادي' },
+  { value: 'sec_1', label: 'أولى ثانوي' },
+  { value: 'sec_2', label: 'ثانية ثانوي' },
+  { value: 'sec_3', label: 'ثالثة ثانوي' },
+  { value: 'general', label: 'عام' }
+];
+const CLASS_LEVEL_LABELS = {};
+CLASS_LEVEL_OPTIONS.forEach(o => { CLASS_LEVEL_LABELS[o.value] = o.label; });
+
 class TeacherController {
   constructor(containerElement, data, onRefreshCallback) {
     this.container = containerElement;
@@ -140,25 +156,47 @@ class TeacherController {
   }
 
   renderClasses() {
+    const classes = this.data.classes || [];
+
     let listHtml = '';
-    (this.data.classes || []).forEach(c => {
+    classes.forEach(c => {
+      const levelLabel = CLASS_LEVEL_LABELS[c.level] || c.level || '—';
       listHtml += `
         <tr style="border-bottom: 1px solid #e2e8f0;">
           <td style="padding: 1rem; font-weight: 800;">${c.name}</td>
-          <td style="padding: 1rem;">${c.level}</td>
+          <td style="padding: 1rem;">${levelLabel}</td>
           <td style="padding: 1rem;">${c.description || '—'}</td>
           <td style="padding: 1rem; font-weight: 800; color: #059669;">${c.groups_count || 0} مجموعات</td>
           <td style="padding: 1rem;">
-            <button class="btn btn-danger btn-sm" data-action="delete-class" data-id="${c.id}">حذف الصف</button>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="btn btn-secondary btn-sm" data-action="edit-class" data-id="${c.id}">تعديل</button>
+              <button class="btn btn-danger btn-sm" data-action="delete-class" data-id="${c.id}">حذف الصف</button>
+            </div>
           </td>
         </tr>
       `;
     });
 
-    // P1-F: Empty state (distinct from Loading / Error)
-    if ((this.data.classes || []).length === 0) {
-      listHtml = this.renderEmptyRow(5, 'لا توجد فصول دراسية حاليًا');
+    // P1-F: Empty state (distinct from Loading / Error) with a clear CTA
+    if (classes.length === 0) {
+      listHtml = this.renderEmptyRow(5, 'لا يوجد صفوف دراسية');
     }
+
+    // P1-I: inline success/error message banner (no page reload required)
+    const messageBox = this.classesMessage ? `
+      <div id="classes-action-message" style="margin: 1rem 1rem 0; padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; ${this.classesMessage.isError
+        ? 'background:#fef2f2; color:#b91c1c; border:1px solid #fecdd3;'
+        : 'background:#ecfdf5; color:#047857; border:1px solid #a7f3d0;'}">
+        ${this.classesMessage.text}
+      </div>
+    ` : '';
+
+    // P1-I: empty-state CTA so teachers can add their first class in-place
+    const emptyCta = classes.length === 0 ? `
+      <div style="text-align: center; padding: 0.25rem 0 1.5rem;">
+        <button class="btn btn-primary" data-action="open-class-modal">+ إضافة صف دراسي</button>
+      </div>
+    ` : '';
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
@@ -167,8 +205,9 @@ class TeacherController {
             <h3 style="font-weight: 800; font-size: 1.15rem;">الصفوف الدراسية (Academic Classes)</h3>
             <p style="font-size: 0.8rem; color: #64748b;">إضافة، تعديل، أو حذف صف مع عرض عدد المجموعات المرتبطة بالصف</p>
           </div>
-          <button class="btn btn-primary" id="open-class-modal">+ إضافة صف دراسي</button>
+          <button class="btn btn-primary" data-action="open-class-modal">+ إضافة صف دراسي</button>
         </div>
+        ${messageBox}
         <div class="table-responsive">
           <table>
             <thead>
@@ -183,8 +222,143 @@ class TeacherController {
             <tbody>${listHtml}</tbody>
           </table>
         </div>
+        ${emptyCta}
       </div>
     `;
+  }
+
+  /* ================================================================
+   * P1-I: Academic Classes CRUD — add / edit / delete via the
+   * existing central modal helper (AppModal). All authorization and
+   * ownership (session tenant teacher_id) is enforced server-side;
+   * client-side validation here is UX only.
+   * ================================================================ */
+
+  /** Show an inline success/error banner in the classes tab. */
+  showClassesMessage(message, isError = false) {
+    this.classesMessage = { text: message, isError: !!isError };
+    if (this.activeTab === 'classes') this.render();
+    // Auto-dismiss after 6s (DOM-only removal — no full re-render).
+    setTimeout(() => {
+      if (this.classesMessage && this.classesMessage.text === message) {
+        this.classesMessage = null;
+        const box = document.getElementById('classes-action-message');
+        if (box && box.parentNode) box.parentNode.removeChild(box);
+      }
+    }, 6000);
+  }
+
+  /** Re-fetch the teacher dashboard and re-render (keeps counts in sync). */
+  async refreshClasses() {
+    try {
+      const data = await ApiClient.getTeacherData();
+      this.data = data;
+      if (this.activeTab === 'classes') this.render();
+    } catch (error) {
+      this.showClassesMessage(this.describeApiError(error).message, true);
+    }
+  }
+
+  /** Add-class modal — fields match the academic_classes business model. */
+  openClassModal() {
+    AppModal.open({
+      title: 'إضافة صف دراسي جديد',
+      description: 'سيُحفظ الصف داخل مساحة المدرس الحالية فقط (عزل المستأجرين مفروض من الخادم).',
+      fields: [
+        {
+          name: 'name', label: 'اسم الصف', type: 'text', required: true,
+          maxlength: 150, placeholder: 'مثال: ثالثة ثانوي (علمي)'
+        },
+        {
+          name: 'level', label: 'المرحلة الدراسية', type: 'select', required: true,
+          value: 'prep_1', options: CLASS_LEVEL_OPTIONS
+        },
+        {
+          name: 'description', label: 'الوصف (اختياري)', type: 'textarea', rows: 3,
+          maxlength: 1000, placeholder: 'وصف مختصر للمنهج أو محتوى الصف'
+        }
+      ],
+      submitLabel: 'إضافة الصف',
+      loadingLabel: 'جارٍ الإضافة...',
+      onSubmit: async (values) => {
+        await ApiClient.createClass({
+          name: String(values.name || '').trim(),
+          level: values.level,
+          description: String(values.description || '').trim()
+        });
+        await this.refreshClasses();
+        this.showClassesMessage('تم إضافة الصف الدراسي بنجاح');
+      }
+    });
+  }
+
+  /** Edit-class modal — prefilled with the existing class values. */
+  openEditClassModal(classId) {
+    const cls = (this.data.classes || []).find(c => Number(c.id) === classId);
+    if (!cls) {
+      this.showClassesMessage('الصف الدراسي غير موجود', true);
+      return;
+    }
+
+    const currentLevel = String(cls.level || '');
+    const levelOptions = CLASS_LEVEL_OPTIONS.some(o => o.value === currentLevel)
+      ? CLASS_LEVEL_OPTIONS
+      : [{ value: currentLevel, label: currentLevel || 'عام' }].concat(CLASS_LEVEL_OPTIONS);
+
+    AppModal.open({
+      title: 'تعديل الصف الدراسي',
+      description: 'سيتم حفظ التعديلات على الصف الحالي فقط (ملكية المدرس مفروضة من الخادم).',
+      fields: [
+        {
+          name: 'name', label: 'اسم الصف', type: 'text', required: true,
+          maxlength: 150, value: cls.name || '', placeholder: 'مثال: ثالثة ثانوي (علمي)'
+        },
+        {
+          name: 'level', label: 'المرحلة الدراسية', type: 'select', required: true,
+          value: currentLevel, options: levelOptions
+        },
+        {
+          name: 'description', label: 'الوصف (اختياري)', type: 'textarea', rows: 3,
+          maxlength: 1000, value: cls.description || '', placeholder: 'وصف مختصر للمنهج أو محتوى الصف'
+        }
+      ],
+      submitLabel: 'حفظ التعديلات',
+      loadingLabel: 'جارٍ الحفظ...',
+      onSubmit: async (values) => {
+        await ApiClient.updateClass({
+          id: Number(cls.id),
+          name: String(values.name || '').trim(),
+          level: values.level,
+          description: String(values.description || '').trim()
+        });
+        await this.refreshClasses();
+        this.showClassesMessage('تم تحديث الصف الدراسي بنجاح');
+      }
+    });
+  }
+
+  /**
+   * Delete-class confirmation modal. On 409 the backend's safe Arabic
+   * conflict message is shown (via AppModal). 403 → 'ليس لديك صلاحية',
+   * 401 → 'انتهت جلسة تسجيل الدخول', 500 → generic server error.
+   */
+  confirmDeleteClass(classId) {
+    const cls = (this.data.classes || []).find(c => Number(c.id) === classId);
+    AppModal.open({
+      title: 'تأكيد حذف الصف الدراسي',
+      description: cls
+        ? `هل أنت متأكد من حذف هذا الصف الدراسي؟ سيتم حذف "${cls.name}" نهائيًا.`
+        : 'هل أنت متأكد من حذف هذا الصف الدراسي؟',
+      fields: [],
+      submitLabel: 'حذف',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الحذف...',
+      onSubmit: async () => {
+        await ApiClient.deleteClass(classId);
+        await this.refreshClasses();
+        this.showClassesMessage('تم حذف الصف الدراسي بنجاح');
+      }
+    });
   }
 
   renderGroups() {
@@ -1599,5 +1773,17 @@ class TeacherController {
     if (btnExamModal) {
       btnExamModal.addEventListener('click', () => this.openExamModal());
     }
+
+    // P1-I: Academic Classes CRUD — add / edit / delete (real API data,
+    // no page reload; ownership enforced server-side).
+    this.container.querySelectorAll('[data-action="open-class-modal"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openClassModal());
+    });
+    this.container.querySelectorAll('[data-action="edit-class"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openEditClassModal(Number(btn.dataset.id)));
+    });
+    this.container.querySelectorAll('[data-action="delete-class"]').forEach(btn => {
+      btn.addEventListener('click', () => this.confirmDeleteClass(Number(btn.dataset.id)));
+    });
   }
 }
