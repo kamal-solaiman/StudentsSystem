@@ -50,12 +50,15 @@ CREATE TABLE IF NOT EXISTS `teacher_staff` (
   CONSTRAINT `fk_staff_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 4. Academic Classes (الصفوف الدراسية e.g. أولى إعدادي, أولى ثانوي, ثالثة ثانوي)
+-- 4. Academic Classes
+-- level stores the educational stage; grade stores the grade within that stage.
+-- name is a backend-derived canonical display value (e.g. الصف الأول الإعدادي).
 CREATE TABLE IF NOT EXISTS `academic_classes` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `teacher_id` INT UNSIGNED NOT NULL,
   `name` VARCHAR(150) NOT NULL,
   `level` VARCHAR(50) NOT NULL,
+  `grade` VARCHAR(20) NULL,
   `description` TEXT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

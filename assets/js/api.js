@@ -31,7 +31,25 @@ class ApiClient {
     return this.csrfToken;
   }
 
+  static resolveApiUrl(endpoint) {
+    // The SPA uses history routes such as /110/teacher/classes. A
+    // document-relative URL would incorrectly request /110/teacher/api/*.
+    // Resolve every endpoint from the deployed application root instead.
+    const path = window.location.pathname;
+    const basePath = path === '/110' || path.startsWith('/110/') ? '/110/' : '/';
+    return `${basePath}api/${String(endpoint || '').replace(/^\/+/, '')}`;
+  }
+
+  static _networkError(cause) {
+    const error = new Error('Network request failed');
+    error.name = 'NetworkError';
+    error.isNetworkError = true;
+    error.cause = cause;
+    return error;
+  }
+
   static async request(endpoint, method = 'GET', payload = null) {
+    method = String(method || 'GET').toUpperCase();
     const headers = {
       'Accept': 'application/json, text/plain, */*'
     };
@@ -53,49 +71,89 @@ class ApiClient {
 
     if (payload !== null && method !== 'GET') {
       headers['Content-Type'] = 'application/json; charset=UTF-8';
-      options.body = JSON.stringify(payload);
-      
-      // Also include CSRF token in body for JSON requests
-      if (stateChangingMethods.includes(method) && !payload.csrf_token) {
-        payload = { ...payload, csrf_token: this.getCsrfToken() };
-        options.body = JSON.stringify(payload);
+
+      // Also include CSRF token in the JSON body. Build a new object rather
+      // than mutating caller-owned data.
+      let bodyPayload = payload;
+      if (stateChangingMethods.includes(method)
+          && payload && typeof payload === 'object' && !Array.isArray(payload)
+          && !payload.csrf_token) {
+        bodyPayload = { ...payload, csrf_token: this.getCsrfToken() };
       }
+      options.body = JSON.stringify(bodyPayload);
     }
 
+    const url = this.resolveApiUrl(endpoint);
+    let response;
     try {
-      // The SPA uses history routes such as /110/teacher/attendance. A
-      // document-relative URL would incorrectly request /110/teacher/api/*.
-      // Resolve API calls from the application base path instead.
-      const path = window.location.pathname;
-      const basePath = path.startsWith('/110/') || path === '/110' || path === '/110/' ? '/110/' : '/';
-      const response = await fetch(`${basePath}api/${endpoint}`, options);
-      const data = await response.json();
-
-      if (!response.ok) {
-        // If unauthorized, clear CSRF token
-        if (response.status === 401) {
-          this.csrfToken = '';
-          if (typeof sessionStorage !== 'undefined') {
-            sessionStorage.removeItem('csrf_token');
-          }
-        }
-        const error = new Error(data.message || data.error || `Server error: ${response.status}`);
-        // P1-E: expose the HTTP status so UI layers can distinguish
-        // 401 / 403 / 500 / network failures without parsing messages.
-        error.status = response.status;
-        throw error;
-      }
-
-      // Extract CSRF token from response if present
-      if (data.csrf_token) {
-        this.setCsrfToken(data.csrf_token);
-      }
-
-      return data;
-    } catch (error) {
-      console.error(`API Client Error [${method} ${endpoint}]:`, error);
+      response = await fetch(url, options);
+    } catch (cause) {
+      // Only a rejected fetch() is a transport/network failure. HTTP 4xx/5xx
+      // responses resolve normally and must retain their status for the UI.
+      const error = this._networkError(cause);
+      console.error(`API Client Network Error [${method} ${url}]:`, cause);
       throw error;
     }
+
+    let responseText;
+    try {
+      responseText = await response.text();
+    } catch (cause) {
+      // A body-stream failure after headers were received is still a genuine
+      // transport failure, but retain the received status for diagnostics.
+      const error = this._networkError(cause);
+      error.status = response.status;
+      error.responseReceived = true;
+      console.error(`API Client Response Read Error [${method} ${url}]:`, cause);
+      throw error;
+    }
+
+    // A 401 is authoritative even if its body is empty or malformed. Clear the
+    // token before parsing so an HTML login/session error cannot leave stale
+    // CSRF state behind.
+    if (response.status === 401) {
+      this.csrfToken = '';
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('csrf_token');
+      }
+    }
+
+    let data = {};
+    if (responseText.trim() !== '') {
+      try {
+        data = JSON.parse(responseText);
+      } catch (cause) {
+        // Root-cause fix: response.json() previously threw a bare SyntaxError
+        // for an Apache/PHP HTML or empty error page. With no .status attached,
+        // AppModal mislabeled that HTTP response as a network outage.
+        const error = new Error('استجابة غير صالحة من الخادم');
+        error.status = response.status;
+        error.responseReceived = true;
+        error.code = 'INVALID_JSON_RESPONSE';
+        error.cause = cause;
+        console.error(`API Client Invalid JSON [${method} ${url}] (HTTP ${response.status})`);
+        throw error;
+      }
+    }
+
+    if (!response.ok) {
+      const backendMessage = data && typeof data === 'object'
+        ? (data.message || data.error)
+        : '';
+      const error = new Error(backendMessage || `Server error: ${response.status}`);
+      error.status = response.status;
+      error.responseReceived = true;
+      error.data = data;
+      console.error(`API Client HTTP Error [${method} ${url}]:`, error);
+      throw error;
+    }
+
+    // Extract CSRF token from response if present
+    if (data && typeof data === 'object' && data.csrf_token) {
+      this.setCsrfToken(data.csrf_token);
+    }
+
+    return data;
   }
 
   static async login(email, password) {

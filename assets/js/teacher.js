@@ -2,20 +2,68 @@
  * JavaScript Controller for the 9 Mandatory Teacher Dashboard Pages
  */
 
-// P1-I: Academic class levels — display labels + modal select options.
-// The backend stores these as free-form VARCHAR(50) codes (see seed.sql),
-// so unknown values simply fall back to the raw stored value.
-const CLASS_LEVEL_OPTIONS = [
-  { value: 'prep_1', label: 'أولى إعدادي' },
-  { value: 'prep_2', label: 'ثانية إعدادي' },
-  { value: 'prep_3', label: 'ثالثة إعدادي' },
-  { value: 'sec_1', label: 'أولى ثانوي' },
-  { value: 'sec_2', label: 'ثانية ثانوي' },
-  { value: 'sec_3', label: 'ثالثة ثانوي' },
+// Academic-class vocabulary mirrors api/teacher.php. `level` is retained in
+// MySQL as the educational-stage storage column; `grade` is the only new field.
+const CLASS_STAGE_OPTIONS = [
+  { value: 'primary', label: 'ابتدائي' },
+  { value: 'preparatory', label: 'إعدادي' },
+  { value: 'secondary', label: 'ثانوي' },
   { value: 'general', label: 'عام' }
 ];
-const CLASS_LEVEL_LABELS = {};
-CLASS_LEVEL_OPTIONS.forEach(o => { CLASS_LEVEL_LABELS[o.value] = o.label; });
+const CLASS_GRADE_OPTIONS = [
+  { value: 'first', label: 'الأول' },
+  { value: 'second', label: 'الثاني' },
+  { value: 'third', label: 'الثالث' },
+  { value: 'fourth', label: 'الرابع' },
+  { value: 'fifth', label: 'الخامس' },
+  { value: 'sixth', label: 'السادس' }
+];
+const CLASS_STAGE_LABELS = Object.fromEntries(CLASS_STAGE_OPTIONS.map(o => [o.value, o.label]));
+const CLASS_GRADE_LABELS = Object.fromEntries(CLASS_GRADE_OPTIONS.map(o => [o.value, o.label]));
+const CLASS_STAGE_ADJECTIVES = {
+  primary: 'الابتدائي',
+  preparatory: 'الإعدادي',
+  secondary: 'الثانوي',
+  general: 'العام'
+};
+const CLASS_ALLOWED_GRADES = {
+  primary: ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'],
+  preparatory: ['first', 'second', 'third'],
+  secondary: ['first', 'second', 'third'],
+  // The existing "عام" category is not tied to a three- or six-year cycle,
+  // so it keeps the complete grade vocabulary instead of inventing a category.
+  general: ['first', 'second', 'third', 'fourth', 'fifth', 'sixth']
+};
+const LEGACY_CLASS_LEVELS = {
+  prep_1: { educational_stage: 'preparatory', grade: 'first' },
+  prep_2: { educational_stage: 'preparatory', grade: 'second' },
+  prep_3: { educational_stage: 'preparatory', grade: 'third' },
+  sec_1: { educational_stage: 'secondary', grade: 'first' },
+  sec_2: { educational_stage: 'secondary', grade: 'second' },
+  sec_3: { educational_stage: 'secondary', grade: 'third' }
+};
+
+function getClassGradeOptions(educationalStage) {
+  const allowed = CLASS_ALLOWED_GRADES[educationalStage] || [];
+  return CLASS_GRADE_OPTIONS.filter(option => allowed.includes(option.value));
+}
+
+function getAcademicClassName(educationalStage, grade) {
+  const allowed = CLASS_ALLOWED_GRADES[educationalStage] || [];
+  const gradeLabel = CLASS_GRADE_LABELS[grade];
+  const stageAdjective = CLASS_STAGE_ADJECTIVES[educationalStage];
+  return allowed.includes(grade) && gradeLabel && stageAdjective
+    ? `الصف ${gradeLabel} ${stageAdjective}`
+    : '';
+}
+
+function getAcademicClassParts(cls) {
+  const level = String((cls && (cls.educational_stage || cls.level)) || '');
+  if (CLASS_ALLOWED_GRADES[level]) {
+    return { educational_stage: level, grade: String((cls && cls.grade) || '') };
+  }
+  return LEGACY_CLASS_LEVELS[level] || { educational_stage: '', grade: '' };
+}
 
 class TeacherController {
   constructor(containerElement, data, onRefreshCallback) {
@@ -160,11 +208,15 @@ class TeacherController {
 
     let listHtml = '';
     classes.forEach(c => {
-      const levelLabel = CLASS_LEVEL_LABELS[c.level] || c.level || '—';
+      const parts = getAcademicClassParts(c);
+      const stageLabel = CLASS_STAGE_LABELS[parts.educational_stage] || '—';
+      const gradeLabel = CLASS_GRADE_LABELS[parts.grade] || '—';
+      const canonicalName = getAcademicClassName(parts.educational_stage, parts.grade);
       listHtml += `
         <tr style="border-bottom: 1px solid #e2e8f0;">
-          <td style="padding: 1rem; font-weight: 800;">${c.name}</td>
-          <td style="padding: 1rem;">${levelLabel}</td>
+          <td style="padding: 1rem; font-weight: 800;">${canonicalName || c.name}</td>
+          <td style="padding: 1rem;">${stageLabel}</td>
+          <td style="padding: 1rem;">${gradeLabel}</td>
           <td style="padding: 1rem;">${c.description || '—'}</td>
           <td style="padding: 1rem; font-weight: 800; color: #059669;">${c.groups_count || 0} مجموعات</td>
           <td style="padding: 1rem;">
@@ -179,7 +231,7 @@ class TeacherController {
 
     // P1-F: Empty state (distinct from Loading / Error) with a clear CTA
     if (classes.length === 0) {
-      listHtml = this.renderEmptyRow(5, 'لا يوجد صفوف دراسية');
+      listHtml = this.renderEmptyRow(6, 'لا يوجد صفوف دراسية');
     }
 
     // P1-I: inline success/error message banner (no page reload required)
@@ -212,11 +264,12 @@ class TeacherController {
           <table>
             <thead>
               <tr>
-                <th>اسم الصف</th>
-                <th>المرحلة</th>
+                <th>اسم الصف الدراسي</th>
+                <th>المرحلة التعليمية</th>
+                <th>الصف الدراسي</th>
                 <th>الوصف</th>
-                <th>المجموعات المرتبطة</th>
-                <th>إجراءات</th>
+                <th>عدد المجموعات</th>
+                <th>الإجراءات</th>
               </tr>
             </thead>
             <tbody>${listHtml}</tbody>
@@ -250,40 +303,49 @@ class TeacherController {
 
   /** Re-fetch the teacher dashboard and re-render (keeps counts in sync). */
   async refreshClasses() {
-    try {
-      const data = await ApiClient.getTeacherData();
-      this.data = data;
-      if (this.activeTab === 'classes') this.render();
-    } catch (error) {
-      this.showClassesMessage(this.describeApiError(error).message, true);
-    }
+    const data = await ApiClient.getTeacherData();
+    this.data = data;
+    if (this.activeTab === 'classes') this.render();
   }
 
-  /** Add-class modal — fields match the academic_classes business model. */
+  classModalFields(educationalStage = 'primary', grade = 'first', description = '') {
+    return [
+      {
+        name: 'educational_stage', label: 'المرحلة التعليمية', type: 'select', required: true,
+        value: educationalStage, options: CLASS_STAGE_OPTIONS
+      },
+      {
+        name: 'grade', label: 'الصف الدراسي', type: 'select', required: true,
+        value: grade,
+        options: values => getClassGradeOptions(values.educational_stage)
+      },
+      {
+        name: 'description', label: 'الوصف (اختياري)', type: 'textarea', rows: 3,
+        maxlength: 1000, value: description, placeholder: 'وصف مختصر للمنهج أو محتوى الصف'
+      }
+    ];
+  }
+
+  classNamePreview() {
+    return {
+      label: 'اسم الصف الدراسي (يُنشأ تلقائيًا)',
+      render: values => getAcademicClassName(values.educational_stage, values.grade)
+    };
+  }
+
+  /** Add-class modal — name is derived from stage + grade by the backend. */
   openClassModal() {
     AppModal.open({
       title: 'إضافة صف دراسي جديد',
-      description: 'سيُحفظ الصف داخل مساحة المدرس الحالية فقط (عزل المستأجرين مفروض من الخادم).',
-      fields: [
-        {
-          name: 'name', label: 'اسم الصف', type: 'text', required: true,
-          maxlength: 150, placeholder: 'مثال: ثالثة ثانوي (علمي)'
-        },
-        {
-          name: 'level', label: 'المرحلة الدراسية', type: 'select', required: true,
-          value: 'prep_1', options: CLASS_LEVEL_OPTIONS
-        },
-        {
-          name: 'description', label: 'الوصف (اختياري)', type: 'textarea', rows: 3,
-          maxlength: 1000, placeholder: 'وصف مختصر للمنهج أو محتوى الصف'
-        }
-      ],
+      description: 'اختر المرحلة والصف؛ سيُنشئ الخادم اسم الصف الدراسي تلقائيًا.',
+      fields: this.classModalFields(),
+      preview: this.classNamePreview(),
       submitLabel: 'إضافة الصف',
       loadingLabel: 'جارٍ الإضافة...',
       onSubmit: async (values) => {
         await ApiClient.createClass({
-          name: String(values.name || '').trim(),
-          level: values.level,
+          educational_stage: values.educational_stage,
+          grade: values.grade,
           description: String(values.description || '').trim()
         });
         await this.refreshClasses();
@@ -292,7 +354,7 @@ class TeacherController {
     });
   }
 
-  /** Edit-class modal — prefilled with the existing class values. */
+  /** Edit-class modal — prefilled with normalized legacy/current values. */
   openEditClassModal(classId) {
     const cls = (this.data.classes || []).find(c => Number(c.id) === classId);
     if (!cls) {
@@ -300,35 +362,25 @@ class TeacherController {
       return;
     }
 
-    const currentLevel = String(cls.level || '');
-    const levelOptions = CLASS_LEVEL_OPTIONS.some(o => o.value === currentLevel)
-      ? CLASS_LEVEL_OPTIONS
-      : [{ value: currentLevel, label: currentLevel || 'عام' }].concat(CLASS_LEVEL_OPTIONS);
+    const parts = getAcademicClassParts(cls);
+    const currentStage = CLASS_ALLOWED_GRADES[parts.educational_stage]
+      ? parts.educational_stage
+      : 'general';
+    const stageGrades = CLASS_ALLOWED_GRADES[currentStage];
+    const currentGrade = stageGrades.includes(parts.grade) ? parts.grade : stageGrades[0];
 
     AppModal.open({
       title: 'تعديل الصف الدراسي',
-      description: 'سيتم حفظ التعديلات على الصف الحالي فقط (ملكية المدرس مفروضة من الخادم).',
-      fields: [
-        {
-          name: 'name', label: 'اسم الصف', type: 'text', required: true,
-          maxlength: 150, value: cls.name || '', placeholder: 'مثال: ثالثة ثانوي (علمي)'
-        },
-        {
-          name: 'level', label: 'المرحلة الدراسية', type: 'select', required: true,
-          value: currentLevel, options: levelOptions
-        },
-        {
-          name: 'description', label: 'الوصف (اختياري)', type: 'textarea', rows: 3,
-          maxlength: 1000, value: cls.description || '', placeholder: 'وصف مختصر للمنهج أو محتوى الصف'
-        }
-      ],
+      description: 'يُشتق اسم الصف تلقائيًا من المرحلة التعليمية والصف الدراسي، ويتحقق الخادم من الاختيار.',
+      fields: this.classModalFields(currentStage, currentGrade, cls.description || ''),
+      preview: this.classNamePreview(),
       submitLabel: 'حفظ التعديلات',
       loadingLabel: 'جارٍ الحفظ...',
       onSubmit: async (values) => {
         await ApiClient.updateClass({
           id: Number(cls.id),
-          name: String(values.name || '').trim(),
-          level: values.level,
+          educational_stage: values.educational_stage,
+          grade: values.grade,
           description: String(values.description || '').trim()
         });
         await this.refreshClasses();
@@ -563,12 +615,16 @@ class TeacherController {
 
   describeApiError(error) {
     const status = error && error.status;
+    if (status === 400) return { title: 'بيانات غير صالحة', message: (error && error.message) || 'تحقق من البيانات المدخلة.' };
     if (status === 401) return { title: 'انتهت الجلسة', message: 'يرجى تسجيل الدخول مجددًا للمتابعة.' };
     if (status === 403) return { title: 'غير مصرح بهذا الإجراء', message: 'لا تملك صلاحية الوصول إلى هذه البيانات.' };
     if (status === 404) return { title: 'البيانات غير موجودة', message: 'المورد المطلوب غير موجود.' };
+    if (status === 409) return { title: 'تعذر إتمام العملية', message: (error && error.message) || 'توجد بيانات متعارضة أو مرتبطة.' };
     if (status === 429) return { title: 'محاولات كثيرة', message: 'يرجى الانتظار قليلًا ثم المحاولة مجددًا.' };
     if (status && status >= 500) return { title: 'خطأ في الخادم', message: 'حدث خطأ أثناء معالجة الطلب — حاول مرة أخرى لاحقًا.' };
-    if (!status) return { title: 'تعذر الاتصال بالخادم', message: 'تحقق من اتصالك بالإنترنت ثم حاول مجددًا.' };
+    if (error && error.isNetworkError === true) {
+      return { title: 'تعذر الاتصال بالخادم', message: 'تحقق من اتصالك بالإنترنت ثم حاول مجددًا.' };
+    }
     return { title: 'حدث خطأ', message: 'خطأ غير متوقع — حاول مرة أخرى.' };
   }
 
