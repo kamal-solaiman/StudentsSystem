@@ -34,6 +34,12 @@ try {
     $reportType = Helper::sanitizeString($_GET['type'] ?? 'all');
 
     // 1. Students Report
+    // P1-K: only ACTIVE enrollments are reported. Removing a student in the
+    // teacher students module hides the link (status='inactive') for this
+    // teacher only, so the student must disappear from this teacher's roster
+    // report as well. Historical attendance rows (report 2 below) are kept
+    // deliberately: they are the teacher's own past session records and
+    // deleting them from the statistics would rewrite history.
     $stmtSt = $db->prepare('
         SELECT s.student_code, s.name, s.grade_level, s.phone, se.enrollment_date, se.payment_status,
                sg.name AS group_name, ac.name AS class_name 
@@ -41,7 +47,7 @@ try {
         JOIN students s ON se.student_id = s.id 
         LEFT JOIN study_groups sg ON se.group_id = sg.id 
         LEFT JOIN academic_classes ac ON se.class_id = ac.id 
-        WHERE se.teacher_id = :tid
+        WHERE se.teacher_id = :tid AND se.status = \'active\'
         ORDER BY se.id DESC
     ');
     $stmtSt->execute(['tid' => $teacherId]);

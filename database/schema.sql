@@ -92,15 +92,22 @@ CREATE TABLE IF NOT EXISTS `students` (
   `user_id` INT UNSIGNED NOT NULL,
   `student_code` VARCHAR(50) NOT NULL UNIQUE,
   `name` VARCHAR(150) NOT NULL,
+  -- P1-K: optional profile fields, never mandatory.
+  `gender` ENUM('male', 'female') NULL DEFAULT NULL,
+  `date_of_birth` DATE NULL DEFAULT NULL,
   `phone` VARCHAR(30) NOT NULL,
   `parent_phone` VARCHAR(30) NOT NULL,
   `parent_user_id` INT UNSIGNED NULL,
+  `address` VARCHAR(255) NULL DEFAULT NULL,
+  `notes` TEXT NULL DEFAULT NULL,
   `grade_level` VARCHAR(100) NOT NULL,
   `qr_code_token` VARCHAR(150) NOT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_student_code` (`student_code`),
   KEY `idx_student_parent` (`parent_user_id`),
+  KEY `idx_student_phone` (`phone`),
+  KEY `idx_student_name` (`name`),
   CONSTRAINT `fk_student_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_student_parent` FOREIGN KEY (`parent_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -119,6 +126,9 @@ CREATE TABLE IF NOT EXISTS `student_enrollments` (
   PRIMARY KEY (`id`),
   KEY `idx_enrollment_teacher` (`teacher_id`),
   KEY `idx_enrollment_student` (`student_id`),
+  KEY `idx_enrollment_group` (`group_id`),
+  -- P1-K: one enrollment (= one group) per teacher per student, enforced by the DB.
+  UNIQUE KEY `uq_enrollment_teacher_student` (`teacher_id`, `student_id`),
   CONSTRAINT `fk_enrollment_teacher` FOREIGN KEY (`teacher_id`) REFERENCES `teachers` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_enrollment_student` FOREIGN KEY (`student_id`) REFERENCES `students` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

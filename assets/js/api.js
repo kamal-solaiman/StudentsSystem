@@ -217,6 +217,46 @@ class ApiClient {
     return this.request(`teacher.php?entity=group&id=${encodeURIComponent(String(id))}`, 'DELETE');
   }
 
+  /* ------------------------------------------------------------------ */
+  /* P1-K: Students module (teacher tenant).                             */
+  /* The student identity is GLOBAL (one record per platform); these     */
+  /* helpers only manage the CURRENT teacher's link to that student.     */
+  /* teacher_id is NEVER sent — the backend derives it from the session  */
+  /* tenant, re-applies the academic-class filter and enforces           */
+  /* 400/403/404/409 semantics server-side.                              */
+  /* ------------------------------------------------------------------ */
+
+  /** Server-side student search (class-scoped, limited, minimum fields). */
+  static async searchStudents(data) {
+    return this.request('teacher.php', 'POST', { action: 'search_students', payload: data });
+  }
+
+  /** Create a brand-new global student and enroll them with this teacher. */
+  static async createStudent(data) {
+    return this.request('teacher.php', 'POST', { action: 'create_student', payload: data });
+  }
+
+  /** Explicit opt-in: link an EXISTING platform student to one of my groups. */
+  static async enrollExistingStudent(data) {
+    return this.request('teacher.php', 'POST', { action: 'enroll_existing_student', payload: data });
+  }
+
+  /** Move a student between MY groups (updates the single enrollment). */
+  static async transferStudentGroup(data) {
+    return this.request('teacher.php', 'POST', { action: 'transfer_student_group', payload: data });
+  }
+
+  /**
+   * Remove the student FROM MY LIST ONLY (hide/unlink). The global student
+   * record, their account and other teachers' links are never touched.
+   */
+  static async unlinkStudent(studentId) {
+    return this.request('teacher.php', 'POST', {
+      action: 'unlink_student',
+      payload: { student_id: Number(studentId) }
+    });
+  }
+
   static async getStudentData(studentId = null) {
     const url = studentId ? `student.php?student_id=${studentId}` : 'student.php';
     return this.request(url, 'GET');
