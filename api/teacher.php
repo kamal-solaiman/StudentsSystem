@@ -248,6 +248,310 @@ function teacherValidateStudyGroupPayload(array $payload, PDO $db, int $teacherI
     ];
 }
 
+/* ================================================================
+ * P1-K: Students module helpers.
+ *
+ * Identity model (unchanged, audited before writing this code):
+ *   - `students` is the ONE global student record of the platform and
+ *     `students.student_code` is its authoritative unique business id.
+ *   - `student_enrollments` is the ONLY teacher <-> student <-> group link
+ *     and already carries `status`, so "delete" for a teacher is a hide
+ *     (status = 'inactive'); a student row is NEVER deleted here.
+ *   - Student credentials live in the shared `users` table
+ *     (`students.user_id`), so an existing student keeps their username and
+ *     password hash when a second teacher links them.
+ *   - Parents are `users` with role='parent' referenced by
+ *     `students.parent_user_id`; this module NEVER creates a parent account.
+ * ================================================================ */
+
+/** Default password of a student account created by a teacher (P1-K). */
+function teacherDefaultStudentPassword(): string
+{
+    return '00000000';
+}
+
+/** Values allowed by students.gender (ENUM), plus "not specified" = NULL. */
+function teacherStudentGenderCatalog(): array
+{
+    return ['male', 'female'];
+}
+
+/**
+ * Inverse of the legacy level codes normalized by teacherAcademicClassParts().
+ * Used so a student enrolled by another teacher in a pre-migration class row
+ * ("sec_3") still matches the same academic class chosen here.
+ */
+function teacherAcademicClassLegacyCode(string $educationalStage, string $grade): string
+{
+    $legacy = [
+        'preparatory' => ['first' => 'prep_1', 'second' => 'prep_2', 'third' => 'prep_3'],
+        'secondary' => ['first' => 'sec_1', 'second' => 'sec_2', 'third' => 'sec_3'],
+    ];
+    return $legacy[$educationalStage][$grade] ?? '';
+}
+
+/**
+ * P1-K: resolve an academic class that MUST belong to the session tenant.
+ * 404 when the class does not exist, 403 when another teacher owns it
+ * (same convention as update_class / delete class).
+ */
+function teacherRequireOwnedClass(PDO $db, int $classId, int $teacherId): array
+{
+    if ($classId <= 0) {
+        Helper::sendJson(['success' => false, 'error' => 'الصف الدراسي مطلوب'], 400);
+    }
+    $stmt = $db->prepare('SELECT id, teacher_id, name, level, grade FROM academic_classes WHERE id = :cid LIMIT 1');
+    $stmt->execute(['cid' => $classId]);
+    $row = $stmt->fetch();
+    if ($row === false) {
+        Helper::sendNotFound('الصف الدراسي غير موجود');
+    }
+    if ((int)$row['teacher_id'] !== $teacherId) {
+        Helper::sendForbidden('Access denied');
+    }
+
+    $parts = teacherAcademicClassParts(
+        (string)$row['level'],
+        isset($row['grade']) ? (string)$row['grade'] : null
+    );
+    $canonicalName = $parts['valid']
+        ? teacherAcademicClassName($parts['educational_stage'], $parts['grade'])
+        : (string)$row['name'];
+
+    return [
+        'id' => (int)$row['id'],
+        'name' => $canonicalName,
+        'educational_stage' => (string)($parts['educational_stage'] ?? ''),
+        'grade' => (string)($parts['grade'] ?? ''),
+        'legacy_code' => $parts['valid']
+            ? teacherAcademicClassLegacyCode($parts['educational_stage'], $parts['grade'])
+            : '',
+    ];
+}
+
+/**
+ * P1-K: resolve a study group that MUST belong to the session tenant.
+ * 404 when absent, 403 when owned by another teacher.
+ */
+function teacherRequireOwnedGroup(PDO $db, int $groupId, int $teacherId): array
+{
+    if ($groupId <= 0) {
+        Helper::sendJson(['success' => false, 'error' => 'المجموعة الدراسية مطلوبة'], 400);
+    }
+    $stmt = $db->prepare('SELECT id, teacher_id, class_id, name FROM study_groups WHERE id = :gid LIMIT 1');
+    $stmt->execute(['gid' => $groupId]);
+    $row = $stmt->fetch();
+    if ($row === false) {
+        Helper::sendNotFound('المجموعة غير موجودة');
+    }
+    if ((int)$row['teacher_id'] !== $teacherId) {
+        Helper::sendForbidden('Access denied');
+    }
+
+    return [
+        'id' => (int)$row['id'],
+        'class_id' => (int)$row['class_id'],
+        'name' => (string)$row['name'],
+    ];
+}
+
+/**
+ * P1-K: the academic class is a HARD backend filter for search and
+ * enrollment — it is re-evaluated server-side and never trusted from the
+ * client. A student matches the selected class when either:
+ *   a) their stored grade_level equals the canonical class name, or
+ *   b) they already have an enrollment (with ANY teacher) in an academic
+ *      class of the same educational stage + grade — including the legacy
+ *      level code and the identical canonical class name of another teacher.
+ * No other teacher's data is ever returned; only the match is evaluated.
+ */
+function teacherStudentClassFilterSql(): string
+{
+    return '(
+            s.grade_level = :cls_name
+            OR EXISTS (
+                SELECT 1 FROM student_enrollments se_f
+                JOIN academic_classes ac_f ON se_f.class_id = ac_f.id
+                WHERE se_f.student_id = s.id
+                  AND (
+                        (ac_f.level = :cls_level AND ac_f.grade = :cls_grade)
+                        OR ac_f.level = :cls_legacy
+                        OR ac_f.name = :cls_name2
+                  )
+            )
+        )';
+}
+
+/** Bound values for teacherStudentClassFilterSql(). */
+function teacherStudentClassFilterParams(array $class): array
+{
+    return [
+        'cls_name' => $class['name'],
+        'cls_name2' => $class['name'],
+        'cls_level' => $class['educational_stage'] !== '' ? $class['educational_stage'] : '__none__',
+        'cls_grade' => $class['grade'] !== '' ? $class['grade'] : '__none__',
+        'cls_legacy' => $class['legacy_code'] !== '' ? $class['legacy_code'] : '__none__',
+    ];
+}
+
+/**
+ * PRIVACY (P1-K): search results expose the least identifying data that still
+ * lets a teacher recognize the right student — the full phone number is
+ * returned only for students already linked to the session tenant.
+ */
+function teacherMaskStudentPhone(string $phone): string
+{
+    $digits = preg_replace('/\D+/', '', $phone);
+    $digits = is_string($digits) ? $digits : '';
+    $length = strlen($digits);
+    if ($length === 0) {
+        return '';
+    }
+    if ($length <= 4) {
+        return str_repeat('•', $length);
+    }
+    return substr($digits, 0, 3) . str_repeat('•', $length - 5) . substr($digits, -2);
+}
+
+/** Optional phone-ish text (student / parent). Stored as-is, never required. */
+function teacherNormalizeOptionalPhone(mixed $raw, string $label): string
+{
+    if ($raw === null || $raw === '') {
+        return '';
+    }
+    if (!is_string($raw) && !is_int($raw)) {
+        Helper::sendJson(['success' => false, 'error' => $label . ' غير صالح'], 400);
+    }
+    $phone = Helper::sanitizeString(trim((string)$raw));
+    if ($phone === '') {
+        return '';
+    }
+    if (preg_match('/^[0-9+\-\s()]{6,30}$/', $phone) !== 1) {
+        Helper::sendJson(['success' => false, 'error' => $label . ' غير صالح'], 400);
+    }
+    return $phone;
+}
+
+/**
+ * P1-K: backend-authoritative student payload validation.
+ *
+ * NOTHING is artificially mandatory: only the student name is required (the
+ * `students` table cannot store a nameless student). Every other profile
+ * field is optional and stored as NULL / '' when omitted. teacher_id,
+ * class_id and group_id are NEVER taken from here — the caller resolves them
+ * from the session tenant and re-verifies ownership.
+ */
+function teacherValidateStudentPayload(array $payload): array
+{
+    // Name: the only required field (students.name is NOT NULL).
+    $nameRaw = $payload['name'] ?? null;
+    if (!is_string($nameRaw) || trim($nameRaw) === '') {
+        Helper::sendJson(['success' => false, 'error' => 'اسم الطالب مطلوب'], 400);
+    }
+    $name = Helper::sanitizeString(trim($nameRaw));
+    if (teacherUnicodeLength($name) > 150) {
+        Helper::sendJson(['success' => false, 'error' => 'اسم الطالب طويل جداً (الحد الأقصى 150 حرفاً)'], 400);
+    }
+
+    // Student code: optional. When supplied it must look like a business code;
+    // uniqueness is checked against the database by the caller.
+    $codeRaw = $payload['student_code'] ?? null;
+    $studentCode = '';
+    if (is_string($codeRaw) && trim($codeRaw) !== '') {
+        $studentCode = strtoupper(Helper::sanitizeString(trim($codeRaw)));
+        if (preg_match('/^[A-Z0-9][A-Z0-9_\-]{2,49}$/', $studentCode) !== 1) {
+            Helper::sendJson(['success' => false, 'error' => 'كود الطالب غير صالح (حروف إنجليزية وأرقام و - أو _ فقط)'], 400);
+        }
+    }
+
+    // Email: optional. It becomes the student's username when provided, so it
+    // must be a real address; uniqueness is checked by the caller.
+    $emailRaw = $payload['email'] ?? null;
+    $email = '';
+    if (is_string($emailRaw) && trim($emailRaw) !== '') {
+        $email = strtolower(trim($emailRaw));
+        if (strlen($email) > 150 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            Helper::sendJson(['success' => false, 'error' => 'البريد الإلكتروني غير صالح'], 400);
+        }
+    }
+
+    $phone = teacherNormalizeOptionalPhone($payload['phone'] ?? null, 'رقم هاتف الطالب');
+    $parentPhone = teacherNormalizeOptionalPhone($payload['parent_phone'] ?? null, 'رقم هاتف ولي الأمر');
+
+    // Gender: optional, schema ENUM('male','female') or NULL.
+    $genderRaw = $payload['gender'] ?? null;
+    $gender = null;
+    if (is_string($genderRaw) && trim($genderRaw) !== '') {
+        $gender = trim($genderRaw);
+        if (!in_array($gender, teacherStudentGenderCatalog(), true)) {
+            Helper::sendJson(['success' => false, 'error' => 'النوع غير صالح'], 400);
+        }
+    }
+
+    // Date of birth: optional ISO date, never in the future.
+    $dobRaw = $payload['date_of_birth'] ?? null;
+    $dateOfBirth = null;
+    if (is_string($dobRaw) && trim($dobRaw) !== '') {
+        $dob = trim($dobRaw);
+        $parsed = DateTime::createFromFormat('Y-m-d', $dob);
+        if ($parsed === false || $parsed->format('Y-m-d') !== $dob) {
+            Helper::sendJson(['success' => false, 'error' => 'تاريخ الميلاد غير صالح'], 400);
+        }
+        if ($dob > date('Y-m-d') || $dob < '1900-01-01') {
+            Helper::sendJson(['success' => false, 'error' => 'تاريخ الميلاد غير منطقي'], 400);
+        }
+        $dateOfBirth = $dob;
+    }
+
+    // Address / notes: optional free text with schema-sized limits.
+    $addressRaw = $payload['address'] ?? null;
+    $address = null;
+    if (is_string($addressRaw) && trim($addressRaw) !== '') {
+        $address = Helper::sanitizeString(trim($addressRaw));
+        if (teacherUnicodeLength($address) > 255) {
+            Helper::sendJson(['success' => false, 'error' => 'العنوان طويل جداً (الحد الأقصى 255 حرفاً)'], 400);
+        }
+    }
+
+    $notesRaw = $payload['notes'] ?? null;
+    $notes = null;
+    if (is_string($notesRaw) && trim($notesRaw) !== '') {
+        $notes = Helper::sanitizeString(trim($notesRaw));
+        if (teacherUnicodeLength($notes) > 2000) {
+            Helper::sendJson(['success' => false, 'error' => 'الملاحظات طويلة جداً (الحد الأقصى 2000 حرف)'], 400);
+        }
+    }
+
+    return [
+        'name' => $name,
+        'student_code' => $studentCode,
+        'email' => $email,
+        'phone' => $phone,
+        'parent_phone' => $parentPhone,
+        'gender' => $gender,
+        'date_of_birth' => $dateOfBirth,
+        'address' => $address,
+        'notes' => $notes,
+    ];
+}
+
+/**
+ * P1-K: collision-safe student code. `students.student_code` is UNIQUE, so a
+ * losing race still fails at the database; this only avoids the common case.
+ */
+function teacherGenerateStudentCode(PDO $db): string
+{
+    $stmt = $db->prepare('SELECT id FROM students WHERE student_code = :code LIMIT 1');
+    for ($attempt = 0; $attempt < 25; $attempt++) {
+        $code = 'STU-' . str_pad((string)random_int(10000, 99999), 5, '0', STR_PAD_LEFT);
+        $stmt->execute(['code' => $code]);
+        if ($stmt->fetch() === false) {
+            return $code;
+        }
+    }
+    Helper::sendJson(['success' => false, 'error' => 'تعذر توليد كود طالب فريد، حاول مرة أخرى'], 500);
+}
+
 Helper::handleCorsOptions();
 
 // SECURITY: Require authentication for all teacher endpoints
@@ -392,23 +696,29 @@ try {
             ];
         }
 
-        // Enrolled Students with this Teacher
+        // Enrolled Students with this Teacher.
+        // P1-K: only ACTIVE enrollments are listed — "delete" in the teacher
+        // students module hides the link (status = 'inactive') for this
+        // teacher only and never touches the global student record.
         $stmtStudents = $db->prepare('
-            SELECT s.*, se.group_id, se.class_id, se.payment_status, se.enrollment_date,
+            SELECT s.*, u.email AS email, se.id AS enrollment_id, se.group_id, se.class_id,
+                   se.payment_status, se.enrollment_date, se.status AS enrollment_status,
                    sg.name AS group_name, ac.name AS class_name 
             FROM student_enrollments se 
             JOIN students s ON se.student_id = s.id 
+            LEFT JOIN users u ON s.user_id = u.id 
             LEFT JOIN study_groups sg ON se.group_id = sg.id 
             LEFT JOIN academic_classes ac ON se.class_id = ac.id 
-            WHERE se.teacher_id = :tid 
+            WHERE se.teacher_id = :tid AND se.status = \'active\'
             ORDER BY se.id DESC
         ');
         $stmtStudents->execute(['tid' => $teacherId]);
         $students = $stmtStudents->fetchAll();
 
-        // All platform students (for linking an existing unified student account)
-        $stmtAllStudents = $db->query('SELECT id, student_code, name, phone, grade_level FROM students ORDER BY id DESC');
-        $allPlatformStudents = $stmtAllStudents->fetchAll();
+        // PRIVACY (P1-K): the full platform student directory is NO LONGER
+        // dumped to the browser. Linking an existing student now goes through
+        // the server-side `search_students` action, which is scoped by the
+        // selected academic class and returns the minimum identifying fields.
 
         // Attendance Overview Today
         $today = date('Y-m-d');
@@ -465,7 +775,6 @@ try {
             'classes' => $classes,
             'groups' => $groups,
             'students' => $students,
-            'all_platform_students' => $allPlatformStudents,
             'exams' => $exams,
             'staff' => $staff,
             'overview' => [
@@ -499,7 +808,15 @@ try {
                 AuthManager::requirePermission('classes');
             } elseif ($action === 'create_group' || $action === 'update_group' || $action === 'delete-group') {
                 AuthManager::requirePermission('groups');
-            } elseif ($action === 'create_student' || $action === 'enroll_existing_student') {
+            } elseif (
+                // P1-K: every students-module action requires the same
+                // existing 'students' staff permission.
+                $action === 'create_student'
+                || $action === 'enroll_existing_student'
+                || $action === 'search_students'
+                || $action === 'transfer_student_group'
+                || $action === 'unlink_student'
+            ) {
                 AuthManager::requirePermission('students');
             } elseif ($action === 'update_teacher_settings') {
                 AuthManager::requirePermission('settings');
@@ -709,128 +1026,440 @@ try {
             ]);
         }
 
-        // Create New Student & Enroll with Teacher
+        /* ------------------------------------------------------------
+         * P1-K: Search platform students (server-side, class-filtered).
+         *
+         * PRIVACY: replaces the previous full `all_platform_students` dump.
+         * Returns at most 20 rows of the minimum identifying fields, and the
+         * phone number is masked unless the student is already linked to the
+         * SESSION tenant. No password hashes, no QR tokens, no other
+         * teacher's class / group / attendance data ever leave this action.
+         * ------------------------------------------------------------ */
+        if ($action === 'search_students') {
+            // The academic class is a HARD backend filter: it is resolved from
+            // the session tenant's own classes, never trusted from the client.
+            $class = teacherRequireOwnedClass($db, (int)($payload['class_id'] ?? 0), $teacherId);
+
+            $queryRaw = $payload['query'] ?? '';
+            if (!is_string($queryRaw)) {
+                Helper::sendJson(['success' => false, 'error' => 'صيغة البحث غير صالحة'], 400);
+            }
+            $query = Helper::sanitizeString(trim($queryRaw));
+            if (teacherUnicodeLength($query) < 2) {
+                Helper::sendJson(['success' => false, 'error' => 'أدخل حرفين على الأقل للبحث'], 400);
+            }
+            if (teacherUnicodeLength($query) > 100) {
+                Helper::sendJson(['success' => false, 'error' => 'نص البحث طويل جداً'], 400);
+            }
+
+            // LIKE wildcards supplied by the user are escaped so a lone "%"
+            // cannot turn the search into a full-table dump.
+            $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $query) . '%';
+
+            $sql = '
+                SELECT s.id, s.student_code, s.name, s.phone, s.grade_level,
+                       se.id AS enrollment_id, se.status AS enrollment_status,
+                       se.group_id, se.class_id AS enrolled_class_id,
+                       sg.name AS group_name, ac.name AS class_name
+                FROM students s
+                LEFT JOIN student_enrollments se
+                       ON se.student_id = s.id AND se.teacher_id = :tid
+                LEFT JOIN study_groups sg
+                       ON sg.id = se.group_id AND sg.teacher_id = :tid2
+                LEFT JOIN academic_classes ac
+                       ON ac.id = se.class_id AND ac.teacher_id = :tid3
+                WHERE (
+                        UPPER(s.student_code) = UPPER(:exact)
+                        OR s.student_code LIKE :like1 ESCAPE \'\\\\\'
+                        OR s.name LIKE :like2 ESCAPE \'\\\\\'
+                        OR s.phone LIKE :like3 ESCAPE \'\\\\\'
+                        OR s.parent_phone LIKE :like4 ESCAPE \'\\\\\'
+                      )
+                  AND ' . teacherStudentClassFilterSql() . '
+                ORDER BY s.id DESC
+                LIMIT 20
+            ';
+            $stmtSearch = $db->prepare($sql);
+            $stmtSearch->execute(array_merge([
+                'tid' => $teacherId,
+                'tid2' => $teacherId,
+                'tid3' => $teacherId,
+                'exact' => $query,
+                'like1' => $like,
+                'like2' => $like,
+                'like3' => $like,
+                'like4' => $like,
+            ], teacherStudentClassFilterParams($class)));
+
+            $results = [];
+            foreach ($stmtSearch->fetchAll() as $row) {
+                $status = isset($row['enrollment_status']) && $row['enrollment_status'] !== null
+                    ? (string)$row['enrollment_status']
+                    : '';
+                // 'linked'   → already added to THIS teacher (active enrollment)
+                // 'hidden'   → previously removed by THIS teacher (inactive)
+                // 'unlinked' → exists on the platform, not linked to this teacher
+                $linkState = $status === 'active' ? 'linked' : ($status === 'inactive' ? 'hidden' : 'unlinked');
+                $isOurs = $linkState !== 'unlinked';
+                $phone = (string)($row['phone'] ?? '');
+                $results[] = [
+                    'id' => (int)$row['id'],
+                    'student_code' => (string)$row['student_code'],
+                    'name' => (string)$row['name'],
+                    // PRIVACY: partial phone for students that are not ours.
+                    'phone' => $isOurs ? $phone : teacherMaskStudentPhone($phone),
+                    'phone_masked' => !$isOurs,
+                    'grade_level' => (string)($row['grade_level'] ?? ''),
+                    'link_state' => $linkState,
+                    // Only the SESSION tenant's own group/class is ever exposed.
+                    'group_id' => $isOurs && $row['group_id'] !== null ? (int)$row['group_id'] : null,
+                    'group_name' => $isOurs && $row['group_name'] !== null ? (string)$row['group_name'] : null,
+                    'class_id' => $isOurs && $row['enrolled_class_id'] !== null ? (int)$row['enrolled_class_id'] : null,
+                    'class_name' => $isOurs && $row['class_name'] !== null ? (string)$row['class_name'] : null,
+                ];
+            }
+
+            Helper::sendJson([
+                'success' => true,
+                'class_id' => $class['id'],
+                'class_name' => $class['name'],
+                'count' => count($results),
+                'results' => $results,
+            ]);
+        }
+
+        /* ------------------------------------------------------------
+         * P1-K: Create a NEW global student and enroll them with this
+         * teacher, in ONE transaction (users + students + enrollment).
+         * ------------------------------------------------------------ */
         if ($action === 'create_student') {
-            $name = Helper::sanitizeString($payload['name'] ?? '');
-            $phone = Helper::sanitizeString($payload['phone'] ?? '');
-            $parentPhone = Helper::sanitizeString($payload['parent_phone'] ?? '');
-            $gradeLevel = Helper::sanitizeString($payload['grade_level'] ?? 'ثالثة ثانوي');
-            $groupId = (int)($payload['group_id'] ?? 1);
-            $classId = (int)($payload['class_id'] ?? 1);
+            $student = teacherValidateStudentPayload($payload);
 
-            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
-            $stmtChkC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
-            $stmtChkC->execute(['cid' => $classId, 'tid' => $teacherId]);
-            if ($stmtChkC->fetch() === false) {
-                Helper::sendForbidden('Access denied');
+            // Tenant-owned class + group, and the group MUST belong to the
+            // selected academic class (hard backend filter).
+            $class = teacherRequireOwnedClass($db, (int)($payload['class_id'] ?? 0), $teacherId);
+            $group = teacherRequireOwnedGroup($db, (int)($payload['group_id'] ?? 0), $teacherId);
+            if ($group['class_id'] !== $class['id']) {
+                Helper::sendJson(['success' => false, 'error' => 'المجموعة المختارة لا تنتمي إلى هذا الصف الدراسي'], 400);
             }
 
-            // SECURITY (P1-B): Verify the group belongs to this teacher's tenant
-            $stmtChkG = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
-            $stmtChkG->execute(['gid' => $groupId, 'tid' => $teacherId]);
-            if ($stmtChkG->fetch() === false) {
-                Helper::sendForbidden('Access denied');
+            // Duplicate protection BEFORE the write (the UNIQUE indexes below
+            // remain the real guarantee against a concurrent request).
+            if ($student['student_code'] !== '') {
+                $stmtCode = $db->prepare('SELECT id FROM students WHERE student_code = :code LIMIT 1');
+                $stmtCode->execute(['code' => $student['student_code']]);
+                if ($stmtCode->fetch() !== false) {
+                    Helper::sendJson(['success' => false, 'message' => 'كود الطالب مستخدم بالفعل لطالب آخر'], 409);
+                }
             }
+            if ($student['email'] !== '') {
+                $stmtEmail = $db->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
+                $stmtEmail->execute(['email' => $student['email']]);
+                if ($stmtEmail->fetch() !== false) {
+                    Helper::sendJson([
+                        'success' => false,
+                        'message' => 'البريد الإلكتروني مستخدم بالفعل — ابحث عن الطالب وأضفه إلى مجموعتك بدلاً من إنشاء حساب جديد'
+                    ], 409);
+                }
+            }
+
+            $studentCode = $student['student_code'] !== ''
+                ? $student['student_code']
+                : teacherGenerateStudentCode($db);
+            // users.email is NOT NULL UNIQUE. When the teacher leaves the email
+            // empty (it must never be mandatory) a placeholder username is
+            // derived from the student code instead of a random timestamp.
+            $loginEmail = $student['email'] !== ''
+                ? $student['email']
+                : strtolower($studentCode) . '@student.local';
+            $gradeLevel = $class['name'];
+            $today = date('Y-m-d');
 
             $db->beginTransaction();
             try {
-                // Create User record
+                // Student account in the SHARED users table (role = student).
                 $stmtUser = $db->prepare('
                     INSERT INTO users (name, email, phone, password_hash, role)
-                    VALUES (:name, :email, :phone, :phash, "student")
+                    VALUES (:name, :email, :phone, :phash, \'student\')
                 ');
                 $stmtUser->execute([
-                    'name' => $name,
-                    'email' => time() . '@student.edu',
-                    'phone' => $phone,
-                    'phash' => password_hash('123456', PASSWORD_DEFAULT)
+                    'name' => $student['name'],
+                    'email' => $loginEmail,
+                    'phone' => $student['phone'],
+                    // P1-K: documented default password for teacher-created
+                    // student accounts (never reused for existing students).
+                    'phash' => password_hash(teacherDefaultStudentPassword(), PASSWORD_DEFAULT)
                 ]);
                 $userId = (int)$db->lastInsertId();
 
-                // Create Student profile
-                $studentCode = 'STU-' . rand(10000, 99999);
                 $stmtSt = $db->prepare('
-                    INSERT INTO students (user_id, student_code, name, phone, parent_phone, grade_level, qr_code_token)
-                    VALUES (:uid, :code, :name, :phone, :pphone, :grade, :qr)
+                    INSERT INTO students (user_id, student_code, name, gender, date_of_birth, phone,
+                                          parent_phone, address, notes, grade_level, qr_code_token)
+                    VALUES (:uid, :code, :name, :gender, :dob, :phone,
+                            :pphone, :address, :notes, :grade, :qr)
                 ');
                 $stmtSt->execute([
                     'uid' => $userId,
                     'code' => $studentCode,
-                    'name' => $name,
-                    'phone' => $phone,
-                    'pphone' => $parentPhone,
+                    'name' => $student['name'],
+                    'gender' => $student['gender'],
+                    'dob' => $student['date_of_birth'],
+                    'phone' => $student['phone'],
+                    'pphone' => $student['parent_phone'],
+                    'address' => $student['address'],
+                    'notes' => $student['notes'],
                     'grade' => $gradeLevel,
                     'qr' => 'QR-' . $studentCode . '-TOKEN-' . time()
                 ]);
                 $studentId = (int)$db->lastInsertId();
 
-                // Enroll with current teacher & group
                 $stmtEnr = $db->prepare('
                     INSERT INTO student_enrollments (teacher_id, student_id, class_id, group_id, enrollment_date, status, payment_status)
-                    VALUES (:tid, :sid, :cid, :gid, CURRENT_DATE(), "active", "paid")
+                    VALUES (:tid, :sid, :cid, :gid, :edate, \'active\', \'paid\')
                 ');
                 $stmtEnr->execute([
                     'tid' => $teacherId,
                     'sid' => $studentId,
-                    'cid' => $classId,
-                    'gid' => $groupId
+                    'cid' => $class['id'],
+                    'gid' => $group['id'],
+                    'edate' => $today
                 ]);
 
                 $db->commit();
-                Helper::sendJson(['success' => true, 'message' => 'تم إنشاء حساب الطالب وربطه بالمجموعة بنجاح', 'student_code' => $studentCode]);
-
             } catch (Throwable $ex) {
-                $db->rollBack();
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                // Concurrency: a parallel request won the unique index race.
+                if ($ex instanceof PDOException && in_array((string)$ex->getCode(), ['23000', '23505'], true)) {
+                    Helper::sendJson(['success' => false, 'message' => 'الطالب مسجل بالفعل — أعد البحث ثم أضفه إلى مجموعتك'], 409);
+                }
                 throw $ex;
             }
+
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم إنشاء حساب الطالب وربطه بالمجموعة بنجاح',
+                'student_id' => $studentId,
+                'student_code' => $studentCode,
+                'username' => $loginEmail,
+                'default_password' => teacherDefaultStudentPassword(),
+                'group_name' => $group['name'],
+                'class_name' => $class['name']
+            ]);
         }
 
-        // Enroll Existing Student (Unified Student Account)
+        /* ------------------------------------------------------------
+         * P1-K: Link an EXISTING platform student to one of this teacher's
+         * groups. Explicit opt-in step of the search-first flow.
+         *
+         * The student record, its credentials and its parent are left
+         * untouched: only an enrollment row is created (or an enrollment
+         * previously hidden by THIS teacher is reactivated).
+         * ------------------------------------------------------------ */
         if ($action === 'enroll_existing_student') {
-            $studentId = (int)($payload['student_id'] ?? 1);
-            $groupId = (int)($payload['group_id'] ?? 1);
-            $classId = (int)($payload['class_id'] ?? 1);
+            $studentId = (int)($payload['student_id'] ?? 0);
+            if ($studentId <= 0) {
+                Helper::sendJson(['success' => false, 'error' => 'الطالب مطلوب'], 400);
+            }
 
-            // SECURITY (P1-B): Verify the student exists
-            $stmtStu = $db->prepare('SELECT id FROM students WHERE id = :sid LIMIT 1');
+            $class = teacherRequireOwnedClass($db, (int)($payload['class_id'] ?? 0), $teacherId);
+            $group = teacherRequireOwnedGroup($db, (int)($payload['group_id'] ?? 0), $teacherId);
+            if ($group['class_id'] !== $class['id']) {
+                Helper::sendJson(['success' => false, 'error' => 'المجموعة المختارة لا تنتمي إلى هذا الصف الدراسي'], 400);
+            }
+
+            $stmtStu = $db->prepare('SELECT id, name FROM students WHERE id = :sid LIMIT 1');
             $stmtStu->execute(['sid' => $studentId]);
-            if ($stmtStu->fetch() === false) {
-                Helper::sendNotFound('Student not found');
+            $studentRow = $stmtStu->fetch();
+            if ($studentRow === false) {
+                Helper::sendNotFound('الطالب غير موجود');
             }
 
-            // SECURITY (P1-B): Prevent duplicate enrollment with the same teacher
-            $stmtDup = $db->prepare('SELECT id FROM student_enrollments WHERE teacher_id = :tid AND student_id = :sid LIMIT 1');
-            $stmtDup->execute(['tid' => $teacherId, 'sid' => $studentId]);
-            if ($stmtDup->fetch() !== false) {
-                Helper::sendJson(['success' => false, 'message' => 'الطالب مرتبط بالفعل بمجموعات هذا المدرس'], 400);
+            // The academic class filter is re-applied on the server: a client
+            // may not enroll a student who does not belong to the class.
+            $stmtMatch = $db->prepare('SELECT s.id FROM students s WHERE s.id = :sid AND ' . teacherStudentClassFilterSql() . ' LIMIT 1');
+            $stmtMatch->execute(array_merge(['sid' => $studentId], teacherStudentClassFilterParams($class)));
+            if ($stmtMatch->fetch() === false) {
+                Helper::sendJson(['success' => false, 'message' => 'الطالب لا ينتمي إلى الصف الدراسي المختار'], 400);
             }
 
-            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
-            $stmtChkC = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
-            $stmtChkC->execute(['cid' => $classId, 'tid' => $teacherId]);
-            if ($stmtChkC->fetch() === false) {
-                Helper::sendForbidden('Access denied');
+            $db->beginTransaction();
+            try {
+                $stmtExisting = $db->prepare('
+                    SELECT id, status, group_id FROM student_enrollments
+                    WHERE teacher_id = :tid AND student_id = :sid
+                    LIMIT 1
+                ');
+                $stmtExisting->execute(['tid' => $teacherId, 'sid' => $studentId]);
+                $existing = $stmtExisting->fetch();
+
+                if ($existing !== false && (string)$existing['status'] === 'active') {
+                    $db->rollBack();
+                    Helper::sendJson([
+                        'success' => false,
+                        'message' => 'الطالب مضاف بالفعل إلى مجموعاتك',
+                        'already_linked' => true,
+                        'group_id' => (int)$existing['group_id']
+                    ], 409);
+                }
+
+                if ($existing !== false) {
+                    // Previously hidden by this teacher: REACTIVATE the same
+                    // row — never a second enrollment for the same pair.
+                    $stmtReactivate = $db->prepare('
+                        UPDATE student_enrollments
+                        SET class_id = :cid, group_id = :gid, status = \'active\', enrollment_date = :edate
+                        WHERE id = :eid AND teacher_id = :tid
+                    ');
+                    $stmtReactivate->execute([
+                        'cid' => $class['id'],
+                        'gid' => $group['id'],
+                        'edate' => date('Y-m-d'),
+                        'eid' => (int)$existing['id'],
+                        'tid' => $teacherId
+                    ]);
+                } else {
+                    $stmtInsert = $db->prepare('
+                        INSERT INTO student_enrollments (teacher_id, student_id, class_id, group_id, enrollment_date, status, payment_status)
+                        VALUES (:tid, :sid, :cid, :gid, :edate, \'active\', \'paid\')
+                    ');
+                    $stmtInsert->execute([
+                        'tid' => $teacherId,
+                        'sid' => $studentId,
+                        'cid' => $class['id'],
+                        'gid' => $group['id'],
+                        'edate' => date('Y-m-d')
+                    ]);
+                }
+
+                $db->commit();
+            } catch (Throwable $ex) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                if ($ex instanceof PDOException && in_array((string)$ex->getCode(), ['23000', '23505'], true)) {
+                    Helper::sendJson(['success' => false, 'message' => 'الطالب مضاف بالفعل إلى مجموعاتك'], 409);
+                }
+                throw $ex;
             }
 
-            // SECURITY (P1-B): Verify the group belongs to this teacher's tenant
-            $stmtChkG = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
-            $stmtChkG->execute(['gid' => $groupId, 'tid' => $teacherId]);
-            if ($stmtChkG->fetch() === false) {
-                Helper::sendForbidden('Access denied');
-            }
-
-            $stmt = $db->prepare('
-                INSERT INTO student_enrollments (teacher_id, student_id, class_id, group_id, enrollment_date, status, payment_status)
-                VALUES (:tid, :sid, :cid, :gid, CURRENT_DATE(), "active", "paid")
-            ');
-            $stmt->execute([
-                'tid' => $teacherId,
-                'sid' => $studentId,
-                'cid' => $classId,
-                'gid' => $groupId
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم إضافة الطالب إلى المجموعة بنجاح',
+                'student_id' => $studentId,
+                'group_name' => $group['name'],
+                'class_name' => $class['name']
             ]);
+        }
 
-            Helper::sendJson(['success' => true, 'message' => 'تم ربط الطالب الموجود بمجموعتك بنجاح — حساب موحد']);
+        /* ------------------------------------------------------------
+         * P1-K: Move a student between two groups OF THE SAME TEACHER.
+         * Always an UPDATE of the single existing enrollment — a transfer
+         * can never produce a second enrollment row.
+         * ------------------------------------------------------------ */
+        if ($action === 'transfer_student_group') {
+            $studentId = (int)($payload['student_id'] ?? 0);
+            if ($studentId <= 0) {
+                Helper::sendJson(['success' => false, 'error' => 'الطالب مطلوب'], 400);
+            }
+            $group = teacherRequireOwnedGroup($db, (int)($payload['group_id'] ?? 0), $teacherId);
+
+            $db->beginTransaction();
+            try {
+                $stmtEnr = $db->prepare('
+                    SELECT id, class_id, group_id FROM student_enrollments
+                    WHERE teacher_id = :tid AND student_id = :sid AND status = \'active\'
+                    LIMIT 1
+                ');
+                $stmtEnr->execute(['tid' => $teacherId, 'sid' => $studentId]);
+                $enrollment = $stmtEnr->fetch();
+                if ($enrollment === false) {
+                    $db->rollBack();
+                    Helper::sendNotFound('الطالب غير مرتبط بمجموعاتك');
+                }
+
+                // Same academic class only (both groups belong to this teacher
+                // and the class was already verified as tenant-owned).
+                if ((int)$enrollment['class_id'] !== $group['class_id']) {
+                    $db->rollBack();
+                    Helper::sendJson([
+                        'success' => false,
+                        'error' => 'لا يمكن النقل إلى مجموعة في صف دراسي مختلف'
+                    ], 400);
+                }
+
+                if ((int)$enrollment['group_id'] === $group['id']) {
+                    $db->rollBack();
+                    Helper::sendJson(['success' => false, 'message' => 'الطالب موجود بالفعل في هذه المجموعة'], 409);
+                }
+
+                $stmtMove = $db->prepare('
+                    UPDATE student_enrollments
+                    SET group_id = :gid
+                    WHERE id = :eid AND teacher_id = :tid
+                ');
+                $stmtMove->execute([
+                    'gid' => $group['id'],
+                    'eid' => (int)$enrollment['id'],
+                    'tid' => $teacherId
+                ]);
+
+                $db->commit();
+            } catch (Throwable $ex) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                throw $ex;
+            }
+
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم نقل الطالب إلى المجموعة الجديدة بنجاح',
+                'student_id' => $studentId,
+                'group_id' => $group['id'],
+                'group_name' => $group['name']
+            ]);
+        }
+
+        /* ------------------------------------------------------------
+         * P1-K: "Delete" a student FROM THIS TEACHER'S LIST ONLY.
+         *
+         * This hides the student for the session tenant by setting the
+         * existing enrollment status to 'inactive'. The global student
+         * record, the student's account and every other teacher's link are
+         * left completely untouched — there is NO DELETE FROM students
+         * anywhere in the teacher module.
+         * ------------------------------------------------------------ */
+        if ($action === 'unlink_student') {
+            $studentId = (int)($payload['student_id'] ?? 0);
+            if ($studentId <= 0) {
+                Helper::sendJson(['success' => false, 'error' => 'الطالب مطلوب'], 400);
+            }
+
+            $stmtEnr = $db->prepare('
+                SELECT id FROM student_enrollments
+                WHERE teacher_id = :tid AND student_id = :sid AND status = \'active\'
+                LIMIT 1
+            ');
+            $stmtEnr->execute(['tid' => $teacherId, 'sid' => $studentId]);
+            $enrollment = $stmtEnr->fetch();
+            if ($enrollment === false) {
+                Helper::sendNotFound('الطالب غير مرتبط بمجموعاتك');
+            }
+
+            $stmtHide = $db->prepare('
+                UPDATE student_enrollments
+                SET status = \'inactive\'
+                WHERE id = :eid AND teacher_id = :tid
+            ');
+            $stmtHide->execute(['eid' => (int)$enrollment['id'], 'tid' => $teacherId]);
+
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم إزالة الطالب من قائمتك (لم يتم حذف حساب الطالب من المنصة)',
+                'student_id' => $studentId
+            ]);
         }
 
         // Update Teacher Settings

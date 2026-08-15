@@ -242,6 +242,115 @@ function groupValidationError(message) {
   return error;
 }
 
+/* ================================================================
+ * P1-K: Students module vocabulary & helpers.
+ *
+ * The student identity is GLOBAL: one record per platform, keyed by the
+ * authoritative business id `student_code`. The teacher dashboard never
+ * duplicates a student — it only manages THIS teacher's link (enrollment)
+ * to an existing global student. Every rule below is duplicated
+ * server-side in api/teacher.php; the client-side copies are UX only.
+ * ================================================================ */
+
+// students.gender is ENUM('male','female') and NULLABLE — "غير محدد" maps to
+// an empty value, so the field is never artificially mandatory.
+const STUDENT_GENDER_OPTIONS = [
+  { value: '', label: 'غير محدد' },
+  { value: 'male', label: 'ذكر' },
+  { value: 'female', label: 'أنثى' }
+];
+
+// Documented default password for teacher-created student accounts. It is
+// only DISPLAYED here; the hash is generated server-side and an existing
+// student's credentials are never overwritten when another teacher links them.
+const STUDENT_DEFAULT_PASSWORD = '00000000';
+
+// Search result states returned by the backend `search_students` action.
+const STUDENT_LINK_STATE_LABELS = {
+  linked: 'الطالب مضاف بالفعل',
+  hidden: 'الطالب مسجل بالفعل',
+  unlinked: 'الطالب مسجل بالفعل'
+};
+
+/** Escape untrusted student text before it is interpolated into innerHTML. */
+function escapeStudentText(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Validation failure surfaced by AppModal exactly like a 400 from the API. */
+function studentValidationError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
+/** Groups belonging to one academic class (the class is a hard filter). */
+function studentGroupsForClass(groups, classId) {
+  const wanted = Number(classId);
+  return (Array.isArray(groups) ? groups : []).filter(g => Number(g.class_id) === wanted);
+}
+
+/**
+ * Search payload. The academic class must be chosen first (the backend
+ * re-applies it as a hard filter and ignores anything else the client sends).
+ */
+function buildStudentSearchPayload(values) {
+  const classId = Number(values.class_id);
+  const groupId = Number(values.group_id);
+  const query = String(values.query || '').trim();
+  if (!Number.isInteger(classId) || classId <= 0) {
+    throw studentValidationError('يجب اختيار الصف الدراسي أولاً');
+  }
+  if (!Number.isInteger(groupId) || groupId <= 0) {
+    throw studentValidationError('يجب اختيار المجموعة أولاً');
+  }
+  if (query.length < 2) {
+    throw studentValidationError('أدخل حرفين على الأقل للبحث');
+  }
+  if (query.length > 100) {
+    throw studentValidationError('نص البحث طويل جداً');
+  }
+  // teacher_id is NEVER sent: the backend derives the tenant from the session.
+  return { class_id: classId, group_id: groupId, query };
+}
+
+/**
+ * New-student payload. Only the name is required (students.name is NOT NULL);
+ * every other profile field is optional and omitted when left blank.
+ */
+function collectStudentPayload(values) {
+  const name = String(values.name || '').trim();
+  if (name === '') {
+    throw studentValidationError('اسم الطالب مطلوب');
+  }
+  const classId = Number(values.class_id);
+  const groupId = Number(values.group_id);
+  if (!Number.isInteger(classId) || classId <= 0) {
+    throw studentValidationError('يجب اختيار الصف الدراسي أولاً');
+  }
+  if (!Number.isInteger(groupId) || groupId <= 0) {
+    throw studentValidationError('يجب اختيار المجموعة أولاً');
+  }
+  return {
+    class_id: classId,
+    group_id: groupId,
+    name,
+    student_code: String(values.student_code || '').trim(),
+    email: String(values.email || '').trim(),
+    phone: String(values.phone || '').trim(),
+    parent_phone: String(values.parent_phone || '').trim(),
+    gender: String(values.gender || '').trim(),
+    date_of_birth: String(values.date_of_birth || '').trim(),
+    address: String(values.address || '').trim(),
+    notes: String(values.notes || '').trim()
+  };
+}
+
 class TeacherController {
   constructor(containerElement, data, onRefreshCallback) {
     this.container = containerElement;
@@ -255,6 +364,11 @@ class TeacherController {
     this.classesMessage = null;
     // P1-J: inline message banner for the Study Groups tab.
     this.groupsMessage = null;
+    // P1-K: inline message banner + last server-side search for the Students tab.
+    // `studentSearch` only ever holds what the SERVER returned for the current
+    // class-scoped query — the browser never receives a platform-wide dump.
+    this.studentsMessage = null;
+    this.studentSearch = null;
 
     // P1-G: dynamic QR broadcast screen state. The token is signed server-side;
     // the frontend only displays it, counts down, and auto-refreshes. No HMAC,
@@ -886,6 +1000,341 @@ class TeacherController {
     });
   }
 
+  /* ================================================================
+   * P1-K: Students module — search-first add/link flow.
+   *
+   * The student identity is GLOBAL. This tab NEVER creates a duplicate
+   * student and NEVER deletes one: it only manages the current teacher's
+   * enrollment link. Ownership (tenant), the academic-class filter and
+   * every duplicate check are enforced server-side; the code below is UX.
+   * ================================================================ */
+
+  /** Show an inline success/error banner in the students tab. */
+  showStudentsMessage(message, isError = false) {
+    this.studentsMessage = { text: message, isError: !!isError };
+    if (this.activeTab === 'students') this.render();
+    // Auto-dismiss after 6s (DOM-only removal — no full re-render).
+    setTimeout(() => {
+      if (this.studentsMessage && this.studentsMessage.text === message) {
+        this.studentsMessage = null;
+        const box = document.getElementById('students-action-message');
+        if (box && box.parentNode) box.parentNode.removeChild(box);
+      }
+    }, 6000);
+  }
+
+  /** Re-fetch the teacher dashboard and re-render (keeps the list in sync). */
+  async refreshStudents() {
+    const data = await ApiClient.getTeacherData();
+    this.data = data;
+    if (this.activeTab === 'students') this.render();
+  }
+
+  /** Groups of one academic class, as modal <select> options. */
+  studentGroupOptions(classId) {
+    return studentGroupsForClass(this.data.groups || [], classId)
+      .map(g => ({ value: g.id, label: g.name }));
+  }
+
+  /**
+   * Step 1 of the add flow: choose academic class → choose group → search.
+   * The search is executed by the SERVER (class-scoped, limited, minimum
+   * fields). No platform-wide student list is ever loaded into the browser.
+   */
+  openStudentModal() {
+    const classes = this.data.classes || [];
+    const groups = this.data.groups || [];
+    if (classes.length === 0) {
+      this.showStudentsMessage('يجب إضافة صف دراسي أولاً قبل إضافة الطلاب.', true);
+      return;
+    }
+    if (groups.length === 0) {
+      this.showStudentsMessage('يجب إضافة مجموعة دراسية أولاً قبل إضافة الطلاب.', true);
+      return;
+    }
+
+    const firstClassId = classes[0].id;
+    AppModal.open({
+      title: 'إضافة / ربط طالب',
+      description: 'اختر الصف الدراسي ثم المجموعة، وابحث عن الطالب بالكود أو الاسم أو رقم الهاتف. إذا لم يكن مسجلاً يمكنك إضافته كطالب جديد.',
+      fields: [
+        {
+          name: 'class_id', label: 'الصف الدراسي', type: 'select', required: true,
+          value: firstClassId,
+          options: classes.map(c => ({ value: c.id, label: c.name }))
+        },
+        {
+          name: 'group_id', label: 'المجموعة', type: 'select', required: true,
+          // Dynamic: only groups of the selected academic class (the backend
+          // rejects any group that belongs to another class anyway).
+          options: (values) => this.studentGroupOptions(values.class_id)
+        },
+        {
+          name: 'query', label: 'بحث عن الطالب (كود / اسم / هاتف)', type: 'text',
+          required: true, maxlength: 100, placeholder: 'مثال: STU-10045 أو يوسف محمد'
+        }
+      ],
+      submitLabel: 'بحث',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ البحث...',
+      onSubmit: async (values) => {
+        const payload = buildStudentSearchPayload(values);
+        const selectedClass = classes.find(c => Number(c.id) === payload.class_id);
+        const selectedGroup = groups.find(g => Number(g.id) === payload.group_id);
+        if (!selectedGroup || Number(selectedGroup.class_id) !== payload.class_id) {
+          throw studentValidationError('المجموعة المختارة لا تنتمي إلى هذا الصف الدراسي');
+        }
+        const response = await ApiClient.searchStudents({
+          class_id: payload.class_id,
+          query: payload.query
+        });
+        this.studentSearch = {
+          class_id: payload.class_id,
+          class_name: (response && response.class_name) || (selectedClass ? selectedClass.name : ''),
+          group_id: payload.group_id,
+          group_name: selectedGroup.name,
+          query: payload.query,
+          results: Array.isArray(response && response.results) ? response.results : []
+        };
+        if (this.activeTab === 'students') this.render();
+      }
+    });
+  }
+
+  /**
+   * Step 2b: the student does not exist on the platform → create a brand-new
+   * global student and enroll them, in one server-side transaction.
+   * Only the name is required; nothing else is artificially mandatory.
+   */
+  openNewStudentModal() {
+    const context = this.studentSearch;
+    if (!context) {
+      this.showStudentsMessage('ابدأ بالبحث عن الطالب أولاً', true);
+      return;
+    }
+    const classes = this.data.classes || [];
+    const prefillName = /^[A-Za-z0-9_-]+$/.test(context.query) ? '' : context.query;
+    const prefillCode = /^[A-Za-z0-9][A-Za-z0-9_-]{2,49}$/.test(context.query)
+      ? context.query.toUpperCase()
+      : '';
+
+    AppModal.open({
+      title: 'إضافة طالب جديد',
+      description: `سيتم إنشاء حساب طالب جديد وربطه بمجموعة "${context.group_name}" في ${context.class_name}. اسم المستخدم هو البريد الإلكتروني وكلمة المرور الافتراضية ${STUDENT_DEFAULT_PASSWORD}.`,
+      fields: [
+        {
+          name: 'class_id', label: 'الصف الدراسي', type: 'select', required: true,
+          value: context.class_id,
+          options: classes.map(c => ({ value: c.id, label: c.name }))
+        },
+        {
+          name: 'group_id', label: 'المجموعة', type: 'select', required: true,
+          value: context.group_id,
+          options: (values) => this.studentGroupOptions(values.class_id)
+        },
+        { name: 'name', label: 'اسم الطالب', type: 'text', required: true, maxlength: 150, value: prefillName },
+        { name: 'student_code', label: 'كود الطالب (اختياري — يُولَّد تلقائياً)', type: 'text', maxlength: 50, value: prefillCode },
+        { name: 'phone', label: 'هاتف الطالب (اختياري)', type: 'text', maxlength: 30 },
+        { name: 'parent_phone', label: 'هاتف ولي الأمر (اختياري)', type: 'text', maxlength: 30 },
+        { name: 'email', label: 'البريد الإلكتروني (اسم المستخدم — اختياري)', type: 'text', maxlength: 150 },
+        { name: 'gender', label: 'النوع (اختياري)', type: 'select', value: '', options: STUDENT_GENDER_OPTIONS },
+        { name: 'date_of_birth', label: 'تاريخ الميلاد (اختياري)', type: 'date' },
+        { name: 'address', label: 'العنوان (اختياري)', type: 'text', maxlength: 255 },
+        { name: 'notes', label: 'ملاحظات (اختياري)', type: 'textarea', maxlength: 2000, rows: 3 }
+      ],
+      submitLabel: 'حفظ الطالب',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الحفظ...',
+      onSubmit: async (values) => {
+        const response = await ApiClient.createStudent(collectStudentPayload(values));
+        this.studentSearch = null;
+        await this.refreshStudents();
+        const username = response && response.username ? ` — اسم المستخدم: ${response.username}` : '';
+        const password = response && response.default_password
+          ? ` وكلمة المرور الافتراضية: ${response.default_password}`
+          : '';
+        this.showStudentsMessage(`تم إنشاء حساب الطالب وربطه بالمجموعة بنجاح${username}${password}`);
+      }
+    });
+  }
+
+  /**
+   * Step 2a: the student already exists on the platform → EXPLICIT opt-in
+   * link. Nothing about the student's profile, credentials or parent is
+   * modified; only an enrollment for THIS teacher is created/reactivated.
+   */
+  confirmLinkStudent(studentId) {
+    const context = this.studentSearch;
+    if (!context) {
+      this.showStudentsMessage('ابدأ بالبحث عن الطالب أولاً', true);
+      return;
+    }
+    const student = (context.results || []).find(r => Number(r.id) === Number(studentId));
+    AppModal.open({
+      title: 'إضافة الطالب إلى المجموعة',
+      description: student
+        ? `الطالب "${student.name}" مسجل بالفعل على المنصة. سيتم ربطه بمجموعة "${context.group_name}" فقط، دون إنشاء حساب جديد أو تعديل بياناته.`
+        : `سيتم ربط الطالب بمجموعة "${context.group_name}" دون إنشاء حساب جديد.`,
+      fields: [],
+      submitLabel: 'إضافة الطالب إلى المجموعة',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الإضافة...',
+      onSubmit: async () => {
+        await ApiClient.enrollExistingStudent({
+          student_id: Number(studentId),
+          class_id: context.class_id,
+          group_id: context.group_id
+        });
+        this.studentSearch = null;
+        await this.refreshStudents();
+        this.showStudentsMessage('تم إضافة الطالب إلى المجموعة بنجاح');
+      }
+    });
+  }
+
+  /**
+   * Move a student between MY groups of the SAME academic class. The backend
+   * UPDATEs the single existing enrollment — a transfer can never create a
+   * second row (one group per teacher per student).
+   */
+  openTransferStudentModal(studentId) {
+    const student = (this.data.students || []).find(s => Number(s.id) === Number(studentId));
+    if (!student) {
+      this.showStudentsMessage('الطالب غير موجود في قائمتك', true);
+      return;
+    }
+    const options = this.studentGroupOptions(student.class_id)
+      .filter(option => Number(option.value) !== Number(student.group_id));
+    if (options.length === 0) {
+      this.showStudentsMessage('لا توجد مجموعة أخرى في نفس الصف الدراسي للنقل إليها', true);
+      return;
+    }
+
+    AppModal.open({
+      title: 'نقل الطالب إلى مجموعة أخرى',
+      description: `الطالب "${student.name}" مسجل حاليًا في مجموعة "${student.group_name || 'عام'}". النقل متاح فقط بين مجموعاتك داخل نفس الصف الدراسي.`,
+      fields: [
+        {
+          name: 'group_id', label: 'المجموعة الجديدة', type: 'select', required: true,
+          value: options[0].value, options
+        }
+      ],
+      submitLabel: 'نقل الطالب',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ النقل...',
+      onSubmit: async (values) => {
+        const groupId = Number(values.group_id);
+        if (!Number.isInteger(groupId) || groupId <= 0) {
+          throw studentValidationError('يجب اختيار المجموعة الجديدة');
+        }
+        await ApiClient.transferStudentGroup({ student_id: Number(studentId), group_id: groupId });
+        await this.refreshStudents();
+        this.showStudentsMessage('تم نقل الطالب إلى المجموعة الجديدة بنجاح');
+      }
+    });
+  }
+
+  /**
+   * "Delete" in this module = HIDE/UNLINK for this teacher only. The global
+   * student record, their account, their parent and every other teacher's
+   * link stay intact (there is no DELETE FROM students anywhere).
+   */
+  confirmUnlinkStudent(studentId) {
+    const student = (this.data.students || []).find(s => Number(s.id) === Number(studentId));
+    AppModal.open({
+      title: 'إزالة الطالب من قائمتك',
+      description: student
+        ? `سيتم إزالة "${student.name}" من قائمة طلابك فقط. لن يتم حذف حساب الطالب من المنصة ولن يتأثر أي مدرس آخر.`
+        : 'سيتم إزالة الطالب من قائمتك فقط دون حذف حسابه من المنصة.',
+      fields: [],
+      submitLabel: 'إزالة من قائمتي',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الإزالة...',
+      onSubmit: async () => {
+        await ApiClient.unlinkStudent(Number(studentId));
+        await this.refreshStudents();
+        this.showStudentsMessage('تم إزالة الطالب من قائمتك (لم يتم حذف حساب الطالب من المنصة)');
+      }
+    });
+  }
+
+  /** Dismiss the current server-side search results panel. */
+  clearStudentSearch() {
+    this.studentSearch = null;
+    if (this.activeTab === 'students') this.render();
+  }
+
+  /**
+   * Server-side search results panel (step 2 of the search-first flow).
+   * Renders ONLY what the backend returned for the selected academic class.
+   */
+  renderStudentSearchPanel() {
+    const context = this.studentSearch;
+    if (!context) return '';
+
+    const results = Array.isArray(context.results) ? context.results : [];
+    const heading = `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+        <div>
+          <h4 style="font-weight:800; font-size:1rem;">نتائج البحث عن "${escapeStudentText(context.query)}"</h4>
+          <p style="font-size:0.78rem; color:#64748b;">${escapeStudentText(context.class_name)} • المجموعة المختارة: ${escapeStudentText(context.group_name)}</p>
+        </div>
+        <button class="btn btn-secondary btn-sm" data-action="clear-student-search">إغلاق النتائج</button>
+      </div>
+    `;
+
+    if (results.length === 0) {
+      return `
+        <div id="student-search-panel" style="margin:1rem; padding:1rem; border:1px solid #e2e8f0; border-radius:0.75rem; background:#f8fafc;">
+          ${heading}
+          <p style="margin-top:0.85rem; font-size:0.85rem; color:#0f172a; font-weight:700;">لا يوجد طالب مطابق في هذا الصف الدراسي.</p>
+          <button class="btn btn-primary btn-sm" style="margin-top:0.75rem;" data-action="open-new-student-modal">إضافة طالب جديد</button>
+        </div>
+      `;
+    }
+
+    let rows = '';
+    results.forEach(result => {
+      const state = String(result.link_state || 'unlinked');
+      const stateLabel = STUDENT_LINK_STATE_LABELS[state] || STUDENT_LINK_STATE_LABELS.unlinked;
+      const stateStyle = state === 'linked'
+        ? 'background:#e0e7ff; color:#4338ca;'
+        : 'background:#ecfdf5; color:#047857;';
+      // "الطالب مضاف بالفعل" also shows the CURRENT class/group of THIS teacher.
+      const currentPlacement = state === 'linked'
+        ? `<span style="font-size:0.75rem; color:#64748b;">${escapeStudentText(result.class_name || '')} • ${escapeStudentText(result.group_name || 'عام')}</span>`
+        : '';
+      const action = state === 'linked'
+        ? `<button class="btn btn-secondary btn-sm" data-action="transfer-student" data-id="${result.id}">نقل إلى مجموعة أخرى</button>`
+        : `<button class="btn btn-primary btn-sm" data-action="link-student" data-id="${result.id}">إضافة الطالب إلى المجموعة</button>`;
+
+      rows += `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; padding:0.75rem 0; border-top:1px solid #e2e8f0;">
+          <div>
+            <span style="font-family:monospace; font-weight:800; color:#059669;">${escapeStudentText(result.student_code)}</span>
+            <span style="font-weight:800; margin-inline-start:0.5rem;">${escapeStudentText(result.name)}</span>
+            <div style="margin-top:0.2rem; display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+              <span style="padding:0.15rem 0.55rem; border-radius:0.5rem; font-size:0.72rem; font-weight:700; ${stateStyle}">${stateLabel}</span>
+              <span style="font-size:0.75rem; color:#64748b;">${escapeStudentText(result.grade_level || '')}</span>
+              <span style="font-size:0.75rem; color:#64748b;">${escapeStudentText(result.phone || '')}</span>
+              ${currentPlacement}
+            </div>
+          </div>
+          <div>${action}</div>
+        </div>
+      `;
+    });
+
+    return `
+      <div id="student-search-panel" style="margin:1rem; padding:1rem; border:1px solid #e2e8f0; border-radius:0.75rem; background:#f8fafc;">
+        ${heading}
+        ${rows}
+        <p style="margin-top:0.85rem; font-size:0.78rem; color:#64748b;">لم تجد الطالب؟</p>
+        <button class="btn btn-secondary btn-sm" style="margin-top:0.35rem;" data-action="open-new-student-modal">إضافة طالب جديد</button>
+      </div>
+    `;
+  }
+
   renderStudents() {
     let listHtml = '';
     (this.data.students || []).forEach(s => {
@@ -900,24 +1349,69 @@ class TeacherController {
           <td style="padding: 1rem;">
             <button class="btn btn-primary btn-sm" data-action="show-qr" data-code="${s.student_code}" data-name="${s.name}">عرض كارنيه QR</button>
           </td>
+          <td style="padding: 1rem;">
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="btn btn-secondary btn-sm" data-action="transfer-student" data-id="${s.id}">نقل لمجموعة</button>
+              <button class="btn btn-danger btn-sm" data-action="unlink-student" data-id="${s.id}">إزالة من قائمتي</button>
+            </div>
+          </td>
         </tr>
       `;
     });
 
     // P1-F: Empty state (distinct from Loading / Error)
     if ((this.data.students || []).length === 0) {
-      listHtml = this.renderEmptyRow(7, 'لا يوجد طلاب حاليًا');
+      listHtml = this.renderEmptyRow(8, 'لا يوجد طلاب حاليًا');
     }
+
+    const classes = this.data.classes || [];
+    const groups = this.data.groups || [];
+
+    // P1-K: adding a student requires an academic class AND a group, because
+    // the class is a hard backend filter and the enrollment needs a group.
+    let prerequisiteNotice = '';
+    if (classes.length === 0) {
+      prerequisiteNotice = `
+        <div style="margin: 1rem 1rem 0; padding: 0.9rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; background: #fffbeb; color: #92400e; border: 1px solid #fde68a;">
+          يجب إضافة صف دراسي أولاً قبل إضافة الطلاب.
+          <button class="btn btn-secondary btn-sm" data-action="goto-classes" style="margin-inline-start: 0.75rem;">إضافة صف دراسي</button>
+        </div>
+      `;
+    } else if (groups.length === 0) {
+      prerequisiteNotice = `
+        <div style="margin: 1rem 1rem 0; padding: 0.9rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; background: #fffbeb; color: #92400e; border: 1px solid #fde68a;">
+          يجب إضافة مجموعة دراسية أولاً قبل إضافة الطلاب.
+          <button class="btn btn-secondary btn-sm" data-action="goto-groups" style="margin-inline-start: 0.75rem;">إضافة مجموعة</button>
+        </div>
+      `;
+    }
+
+    // P1-K: inline success/error message banner (no page reload required)
+    const messageBox = this.studentsMessage ? `
+      <div id="students-action-message" style="margin: 1rem 1rem 0; padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; ${this.studentsMessage.isError
+        ? 'background:#fef2f2; color:#b91c1c; border:1px solid #fecdd3;'
+        : 'background:#ecfdf5; color:#047857; border:1px solid #a7f3d0;'}">
+        ${escapeStudentText(this.studentsMessage.text)}
+      </div>
+    ` : '';
+
+    const canAdd = classes.length > 0 && groups.length > 0;
+    const headerButton = canAdd
+      ? '<button class="btn btn-primary" id="open-student-modal" data-action="open-student-modal">+ إضافة / ربط طالب</button>'
+      : '<button class="btn btn-primary" data-action="goto-classes">إضافة صف دراسي</button>';
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
           <div>
             <h3 style="font-weight: 800; font-size: 1.15rem;">الطلاب المسجلون وحساب الطالب الموحد</h3>
-            <p style="font-size: 0.8rem; color: #64748b;">إضافة طالب جديد، اختيار طالب موجود، إضافة عبر QR Code، أو ربط الطالب بمجموعة</p>
+            <p style="font-size: 0.8rem; color: #64748b;">ابحث عن الطالب أولاً (كود / اسم / هاتف) داخل الصف الدراسي، ثم أضفه إلى مجموعتك أو أنشئ حساباً جديداً إذا لم يكن مسجلاً</p>
           </div>
-          <button class="btn btn-primary" id="open-student-modal">+ إضافة / ربط طالب</button>
+          ${headerButton}
         </div>
+        ${prerequisiteNotice}
+        ${messageBox}
+        ${this.renderStudentSearchPanel()}
         <div class="table-responsive">
           <table>
             <thead>
@@ -929,6 +1423,7 @@ class TeacherController {
                 <th>هاتف الطالب</th>
                 <th>هاتف ولي الأمر</th>
                 <th>كارنيه الحضور</th>
+                <th>الإجراءات</th>
               </tr>
             </thead>
             <tbody>${listHtml}</tbody>
@@ -2268,6 +2763,40 @@ class TeacherController {
     this.container.querySelectorAll('[data-action="delete-group"]').forEach(btn => {
       btn.addEventListener('click', () => this.confirmDeleteGroup(Number(btn.dataset.id)));
     });
+    // P1-K: Students module — search-first add/link, group transfer and
+    // hide/unlink. The student identity is global; nothing here deletes a
+    // student or touches another teacher's data (all enforced server-side).
+    this.container.querySelectorAll('[data-action="open-student-modal"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openStudentModal());
+    });
+    this.container.querySelectorAll('[data-action="open-new-student-modal"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openNewStudentModal());
+    });
+    this.container.querySelectorAll('[data-action="link-student"]').forEach(btn => {
+      btn.addEventListener('click', () => this.confirmLinkStudent(Number(btn.dataset.id)));
+    });
+    this.container.querySelectorAll('[data-action="transfer-student"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openTransferStudentModal(Number(btn.dataset.id)));
+    });
+    this.container.querySelectorAll('[data-action="unlink-student"]').forEach(btn => {
+      btn.addEventListener('click', () => this.confirmUnlinkStudent(Number(btn.dataset.id)));
+    });
+    this.container.querySelectorAll('[data-action="clear-student-search"]').forEach(btn => {
+      btn.addEventListener('click', () => this.clearStudentSearch());
+    });
+    // "إضافة مجموعة" CTA shown on the students tab when the teacher has
+    // classes but no study group yet.
+    this.container.querySelectorAll('[data-action="goto-groups"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (window.router) {
+          window.router.navigate('/teacher/groups');
+        } else {
+          this.activeTab = 'groups';
+          this.render();
+        }
+      });
+    });
+
     // "إضافة صف دراسي" CTA shown on the groups tab when the teacher has no
     // academic classes yet — navigates to the existing Academic Classes screen.
     this.container.querySelectorAll('[data-action="goto-classes"]').forEach(btn => {
