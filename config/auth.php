@@ -357,24 +357,39 @@ final class AuthManager
 
         self::maybePurgeOldLoginAttempts($db);
 
-        // Per-identifier (email) limit
-        $stmt = $db->prepare('
-            SELECT attempts, first_attempt_at
-            FROM login_attempts
-            WHERE identifier = :identifier
-            LIMIT 1
-        ');
-        $stmt->execute(['identifier' => $identifier]);
-        $row = $stmt->fetch();
-        if ($row !== false && self::loginAttemptsExceedLimit($row, self::RATE_LIMIT_MAX_ATTEMPTS)) {
-            return false;
-        }
+        try {
+            // Per-identifier (email) limit
+            $stmt = $db->prepare('
+                SELECT attempts, first_attempt_at
+                FROM login_attempts
+                WHERE identifier = :identifier
+                LIMIT 1
+            ');
+            $stmt->execute(['identifier' => $identifier]);
+            $row = $stmt->fetch();
+            if ($row !== false && self::loginAttemptsExceedLimit($row, self::RATE_LIMIT_MAX_ATTEMPTS)) {
+                return false;
+            }
 
-        // Per-IP limit (blocks credential stuffing across many emails)
-        $stmt->execute(['identifier' => self::loginAttemptIpKey($ip)]);
-        $row = $stmt->fetch();
-        if ($row !== false && self::loginAttemptsExceedLimit($row, self::RATE_LIMIT_IP_MAX_ATTEMPTS)) {
-            return false;
+            // Per-IP limit (blocks credential stuffing across many emails)
+            $stmt->execute(['identifier' => self::loginAttemptIpKey($ip)]);
+            $row = $stmt->fetch();
+            if ($row !== false && self::loginAttemptsExceedLimit($row, self::RATE_LIMIT_IP_MAX_ATTEMPTS)) {
+                return false;
+            }
+        } catch (Throwable $exception) {
+            // REGRESSION FIX: this read previously ran unguarded, and login.php
+            // calls checkRateLimit() BEFORE its try/catch — so a limiter storage
+            // fault (e.g. a missing/broken `login_attempts` table, a documented
+            // manual P1-D migration step) escaped as an uncaught fatal and the
+            // browser received a bodyless HTTP 500 ("Server error: 500").
+            // Follow this method's existing documented policy for limiter
+            // infrastructure errors (see the connect() catch above): fail open
+            // for the limiter only — authentication itself still requires the
+            // same database and all other controls remain enforced. Log a safe
+            // class-only marker; never SQL, identifiers, or credentials.
+            error_log('auth.php checkRateLimit storage read failed: ' . get_class($exception));
+            return true;
         }
 
         return true;

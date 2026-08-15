@@ -182,6 +182,51 @@ function formatGroupClassTime(classTime) {
 }
 
 /**
+ * P1-J-FIX: display of the lesson time range for the groups table.
+ * "من HH:MM إلى HH:MM" (12h Arabic) when a canonical end_time exists;
+ * legacy rows without end_time keep showing only the start time.
+ */
+function formatGroupTimeRange(group) {
+  const start = formatGroupClassTime(group && group.class_time);
+  const end = String((group && group.end_time) || '').trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(end)) {
+    return start;
+  }
+  return `${start} — ${formatGroupClassTime(end)}`;
+}
+
+/**
+ * P1-J-FIX: minutes-since-midnight for a canonical "HH:MM" string, or NaN
+ * for anything else. Used only to compare start/end client-side (UX);
+ * the backend re-validates the range authoritatively.
+ */
+function groupTimeToMinutes(time) {
+  const match = String(time || '').trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return NaN;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+/**
+ * P1-J-FIX: default end-of-lesson prefill = start + 1 hour (wrapping at
+ * midnight is irrelevant for a prefill; the teacher can change it and the
+ * backend enforces end > start). Input/output: {hour, minute, period}.
+ */
+function defaultGroupEndParts(startParts) {
+  const start24 = buildGroupClassTime(startParts.hour, startParts.minute, startParts.period);
+  const startMinutes = groupTimeToMinutes(start24);
+  if (!Number.isFinite(startMinutes)) {
+    return { hour: '06', minute: '00', period: 'evening' };
+  }
+  const endMinutes = Math.min(startMinutes + 60, 23 * 60 + 55);
+  const h24 = Math.floor(endMinutes / 60);
+  const m = endMinutes % 60;
+  return parseGroupClassTime(
+    `${String(h24).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+    startParts.period
+  );
+}
+
+/**
  * Deduplicate client-selected days and order them by the canonical Arabic
  * week. Invalid values never reach the payload (backend is authoritative).
  */
@@ -564,7 +609,7 @@ class TeacherController {
           <td style="padding: 1rem; font-weight: 800;">${g.name}</td>
           <td style="padding: 1rem;">${g.class_name || 'عام'}</td>
           <td style="padding: 1rem;">${days.join('، ') || '—'}</td>
-          <td style="padding: 1rem;">${formatGroupClassTime(g.class_time)}</td>
+          <td style="padding: 1rem;">${formatGroupTimeRange(g)}</td>
           <td style="padding: 1rem; font-weight: 800;">${price} ج.م</td>
           <td style="padding: 1rem;">
             <span style="background: #e0e7ff; color: #4f46e5; padding: 0.25rem 0.65rem; border-radius: 0.5rem; font-size: 0.75rem; font-weight: 700;">
@@ -683,9 +728,14 @@ class TeacherController {
    */
   groupModalFields(group = null) {
     const classes = this.data.classes || [];
-    const parsed = group
+    // P1-J-FIX: start time comes from class_time (canonical or legacy),
+    // end time from end_time when the row has one, otherwise start + 1h.
+    const startParts = group
       ? parseGroupClassTime(group.class_time, group.shift)
       : { hour: '05', minute: '00', period: 'evening' };
+    const endParts = group && /^([01]\d|2[0-3]):[0-5]\d$/.test(String(group.end_time || '').trim())
+      ? parseGroupClassTime(group.end_time, group.shift)
+      : defaultGroupEndParts(startParts);
     const selectedDays = group && Array.isArray(group.study_days)
       ? group.study_days.map(String)
       : [];
@@ -710,17 +760,21 @@ class TeacherController {
         })),
         emptyText: 'لا توجد أيام متاحة'
       },
+      // P1-J-FIX: وقت الحصة as TWO stacked rows — "من:" ABOVE "إلى:", with
+      // hour/minute/period selects INLINE on each row (never <input type="time">).
       {
-        name: 'hour', label: 'موعد الحصة — الساعة', type: 'select', required: true,
-        value: parsed.hour, options: GROUP_HOUR_OPTIONS
+        name: 'start_parts', label: 'وقت الحصة', type: 'timerow',
+        inlineLabel: 'من:', value: startParts,
+        hourOptions: GROUP_HOUR_OPTIONS,
+        minuteOptions: GROUP_MINUTE_OPTIONS,
+        periodOptions: GROUP_PERIOD_OPTIONS
       },
       {
-        name: 'minute', label: 'موعد الحصة — الدقائق', type: 'select', required: true,
-        value: parsed.minute, options: GROUP_MINUTE_OPTIONS
-      },
-      {
-        name: 'period', label: 'الفترة', type: 'select', required: true,
-        value: parsed.period, options: GROUP_PERIOD_OPTIONS
+        name: 'end_parts', label: '', type: 'timerow',
+        inlineLabel: 'إلى:', value: endParts,
+        hourOptions: GROUP_HOUR_OPTIONS,
+        minuteOptions: GROUP_MINUTE_OPTIONS,
+        periodOptions: GROUP_PERIOD_OPTIONS
       },
       {
         name: 'price', label: 'سعر الدرس (ج.م)', type: 'number', required: true,
@@ -739,13 +793,23 @@ class TeacherController {
     if (days.length === 0) {
       throw groupValidationError('يرجى اختيار يوم دراسة واحد على الأقل');
     }
-    const classTime = buildGroupClassTime(values.hour, values.minute, values.period);
+    // P1-J-FIX: convert both من/إلى selections to canonical 24h HH:MM and
+    // reject an empty or inverted range client-side (UX only — the backend
+    // re-validates the same rule authoritatively).
+    const startParts = values.start_parts || {};
+    const endParts = values.end_parts || {};
+    const startTime = buildGroupClassTime(startParts.hour, startParts.minute, startParts.period);
+    const endTime = buildGroupClassTime(endParts.hour, endParts.minute, endParts.period);
+    if (groupTimeToMinutes(endTime) <= groupTimeToMinutes(startTime)) {
+      throw groupValidationError('وقت نهاية الحصة يجب أن يكون بعد وقت بدايتها');
+    }
     return {
       class_id: Number(values.class_id),
       name: String(values.name || '').trim(),
       study_days: days,
-      class_time: classTime,
-      shift: values.period,
+      start_time: startTime,
+      end_time: endTime,
+      shift: startParts.period,
       price: Number(values.price),
       payment_scheme: values.payment_scheme
     };

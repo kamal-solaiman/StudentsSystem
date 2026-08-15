@@ -48,6 +48,9 @@ function loadGroupHelpers() {
       buildGroupClassTime,
       parseGroupClassTime,
       formatGroupClassTime,
+      formatGroupTimeRange,
+      groupTimeToMinutes,
+      defaultGroupEndParts,
       normalizeStudyDays,
       STUDY_DAY_OPTIONS,
       STUDY_DAY_VALUES,
@@ -86,7 +89,8 @@ test('01 createGroup uses prefixed POST and the create_group envelope', async ()
     name: 'مجموعة الفيزياء',
     class_id: 3,
     study_days: ['الأحد', 'الثلاثاء'],
-    class_time: '17:00',
+    start_time: '17:00',
+    end_time: '18:00',
     shift: 'evening',
     price: 350,
     payment_scheme: 'monthly'
@@ -98,7 +102,8 @@ test('01 createGroup uses prefixed POST and the create_group envelope', async ()
   assert.equal(body.payload.name, 'مجموعة الفيزياء');
   assert.equal(body.payload.class_id, 3);
   assert.deepEqual(body.payload.study_days, ['الأحد', 'الثلاثاء']);
-  assert.equal(body.payload.class_time, '17:00');
+  assert.equal(body.payload.start_time, '17:00');
+  assert.equal(body.payload.end_time, '18:00');
   assert.equal(body.payload.teacher_id, undefined);
 });
 
@@ -108,7 +113,8 @@ test('02 updateGroup uses prefixed POST and the update_group envelope', async ()
     name: 'مجموعة معدلة',
     class_id: 2,
     study_days: ['السبت'],
-    class_time: '10:00',
+    start_time: '10:00',
+    end_time: '11:30',
     shift: 'morning',
     price: 60,
     payment_scheme: 'per_session'
@@ -242,7 +248,8 @@ test('15 collectGroupPayload rejects an empty day selection with a validation er
       {},
       {
         name: 'مجموعة', class_id: '1', study_days: [],
-        hour: '05', minute: '00', period: 'evening',
+        start_parts: { hour: '05', minute: '00', period: 'evening' },
+        end_parts: { hour: '06', minute: '00', period: 'evening' },
         price: 100, payment_scheme: 'monthly'
       }
     ),
@@ -257,7 +264,8 @@ test('16 collectGroupPayload builds the canonical create payload', () => {
     {
       name: '  مجموعة الأحد  ', class_id: '3',
       study_days: ['الثلاثاء', 'الأحد'],
-      hour: '05', minute: '30', period: 'evening',
+      start_parts: { hour: '05', minute: '30', period: 'evening' },
+      end_parts: { hour: '06', minute: '30', period: 'evening' },
       price: 350, payment_scheme: 'monthly'
     }
   );
@@ -265,11 +273,205 @@ test('16 collectGroupPayload builds the canonical create payload', () => {
     class_id: 3,
     name: 'مجموعة الأحد',
     study_days: ['الأحد', 'الثلاثاء'],
-    class_time: '17:30',
+    start_time: '17:30',
+    end_time: '18:30',
     shift: 'evening',
     price: 350,
     payment_scheme: 'monthly'
   });
+});
+
+// ---------------------------------------------------------------
+// P1-J-FIX: lesson time range (من / إلى)
+// ---------------------------------------------------------------
+
+test('16a collectGroupPayload rejects an inverted or equal time range client-side', () => {
+  const helpers = loadGroupHelpers();
+  for (const endParts of [
+    { hour: '05', minute: '30', period: 'evening' }, // equal to start
+    { hour: '04', minute: '30', period: 'evening' }, // before start
+    { hour: '10', minute: '00', period: 'morning' }  // morning before evening start
+  ]) {
+    assert.throws(
+      () => helpers.TeacherController.prototype.collectGroupPayload.call(
+        {},
+        {
+          name: 'مجموعة', class_id: '1', study_days: ['الأحد'],
+          start_parts: { hour: '05', minute: '30', period: 'evening' },
+          end_parts: endParts,
+          price: 100, payment_scheme: 'monthly'
+        }
+      ),
+      error => error.status === 400 && /نهاية الحصة/.test(error.message),
+      JSON.stringify(endParts)
+    );
+  }
+});
+
+test('16b groupTimeToMinutes parses canonical HH:MM and rejects everything else', () => {
+  const helpers = loadGroupHelpers();
+  assert.equal(helpers.groupTimeToMinutes('00:00'), 0);
+  assert.equal(helpers.groupTimeToMinutes('17:30'), 1050);
+  assert.equal(helpers.groupTimeToMinutes('23:59'), 1439);
+  assert.ok(Number.isNaN(helpers.groupTimeToMinutes('5:30')));
+  assert.ok(Number.isNaN(helpers.groupTimeToMinutes('25:00')));
+  assert.ok(Number.isNaN(helpers.groupTimeToMinutes('05:00 مساءً')));
+  assert.ok(Number.isNaN(helpers.groupTimeToMinutes('')));
+});
+
+test('16c defaultGroupEndParts prefills start + 1 hour', () => {
+  const helpers = loadGroupHelpers();
+  assert.deepEqual(
+    toPlain(helpers.defaultGroupEndParts({ hour: '05', minute: '30', period: 'evening' })),
+    { hour: '06', minute: '30', period: 'evening' }
+  );
+  assert.deepEqual(
+    toPlain(helpers.defaultGroupEndParts({ hour: '11', minute: '30', period: 'morning' })),
+    { hour: '12', minute: '30', period: 'evening' }
+  );
+});
+
+test('16d formatGroupTimeRange shows من—إلى for ranged rows and start-only for legacy rows', () => {
+  const helpers = loadGroupHelpers();
+  assert.equal(
+    helpers.formatGroupTimeRange({ class_time: '17:30', end_time: '18:30' }),
+    '05:30 مساءً — 06:30 مساءً'
+  );
+  // legacy rows: no end_time stored
+  assert.equal(helpers.formatGroupTimeRange({ class_time: '17:30', end_time: null }), '05:30 مساءً');
+  assert.equal(helpers.formatGroupTimeRange({ class_time: '05:00 مساءً' }), '05:00 مساءً');
+});
+
+test('16e the modal fields stack من ABOVE إلى as two timerow rows with inline hour/minute/period', () => {
+  const helpers = loadGroupHelpers();
+  const fields = helpers.TeacherController.prototype.groupModalFields.call(
+    { data: { classes: [{ id: 1, name: 'الصف الثالث الثانوي' }] } },
+    null
+  );
+  const startIndex = fields.findIndex(f => f.name === 'start_parts');
+  const endIndex = fields.findIndex(f => f.name === 'end_parts');
+  assert.ok(startIndex >= 0 && endIndex >= 0, 'start/end timerow fields exist');
+  assert.ok(startIndex < endIndex, '"من" is rendered ABOVE "إلى"');
+  const start = fields[startIndex];
+  const end = fields[endIndex];
+  // Both are single-row compound selects, never <input type="time">
+  assert.equal(start.type, 'timerow');
+  assert.equal(end.type, 'timerow');
+  assert.equal(start.label, 'وقت الحصة');
+  assert.equal(start.inlineLabel, 'من:');
+  assert.equal(end.label, '');
+  assert.equal(end.inlineLabel, 'إلى:');
+  for (const field of [start, end]) {
+    assert.ok(Array.isArray(field.hourOptions) && field.hourOptions.length === 12);
+    assert.ok(Array.isArray(field.minuteOptions) && field.minuteOptions.length > 0);
+    assert.deepEqual(toPlain(field.periodOptions.map(o => o.value)), ['morning', 'evening']);
+  }
+  // No legacy separate hour/minute/period fields remain
+  assert.equal(fields.find(f => f.name === 'hour'), undefined);
+  assert.equal(fields.find(f => f.name === 'minute'), undefined);
+  assert.equal(fields.find(f => f.name === 'period'), undefined);
+});
+
+test('16f edit mode prefills من from class_time and إلى from stored end_time', () => {
+  const helpers = loadGroupHelpers();
+  const fields = helpers.TeacherController.prototype.groupModalFields.call(
+    { data: { classes: [{ id: 1, name: 'الصف الثالث الثانوي' }] } },
+    {
+      id: 5, name: 'مجموعة', class_id: 1, study_days: ['الأحد'],
+      class_time: '17:30', end_time: '18:30', shift: 'evening',
+      price: 350, payment_scheme: 'monthly'
+    }
+  );
+  const start = fields.find(f => f.name === 'start_parts');
+  const end = fields.find(f => f.name === 'end_parts');
+  assert.deepEqual(toPlain(start.value), { hour: '05', minute: '30', period: 'evening' });
+  assert.deepEqual(toPlain(end.value), { hour: '06', minute: '30', period: 'evening' });
+});
+
+test('16g editing a legacy row without end_time prefills إلى with start + 1 hour', () => {
+  const helpers = loadGroupHelpers();
+  const fields = helpers.TeacherController.prototype.groupModalFields.call(
+    { data: { classes: [{ id: 1, name: 'الصف الثالث الثانوي' }] } },
+    {
+      id: 6, name: 'مجموعة قديمة', class_id: 1, study_days: ['السبت'],
+      class_time: '05:00 مساءً', end_time: null, shift: 'evening',
+      price: 300, payment_scheme: 'monthly'
+    }
+  );
+  const start = fields.find(f => f.name === 'start_parts');
+  const end = fields.find(f => f.name === 'end_parts');
+  assert.deepEqual(toPlain(start.value), { hour: '05', minute: '00', period: 'evening' });
+  assert.deepEqual(toPlain(end.value), { hour: '06', minute: '00', period: 'evening' });
+});
+
+test('16h AppModal timerow renders three inline selects on one flex row and collects an object', () => {
+  // Minimal DOM double: enough for AppModal._buildField + _collect on a timerow.
+  const elements = [];
+  function makeElement(tag) {
+    const el = {
+      tag,
+      children: [],
+      style: {},
+      textContent: '',
+      value: '',
+      className: '',
+      appendChild(child) { this.children.push(child); return child; },
+      append(...kids) { kids.forEach(k => this.children.push(k)); },
+      removeChild(child) { this.children = this.children.filter(c => c !== child); },
+      get firstChild() { return this.children[0] || null; },
+      querySelectorAll() { return []; },
+      setAttribute() {},
+      addEventListener() {}
+    };
+    Object.defineProperty(el, 'style', {
+      value: { set cssText(v) { el._cssText = v; }, get cssText() { return el._cssText || ''; } }
+    });
+    elements.push(el);
+    return el;
+  }
+  const sandbox = {
+    document: { createElement: makeElement, addEventListener() {}, removeEventListener() {}, body: makeElement('body') },
+    window: {},
+    console,
+    Object, String, Array, Number
+  };
+  const vm = require('node:vm');
+  vm.runInNewContext(read('assets/js/modal.js') + '\nthis.ModalClass = AppModal;', sandbox);
+  const AppModal = sandbox.ModalClass;
+
+  const modal = Object.create(AppModal.prototype);
+  modal.fields = [];
+  const spec = {
+    name: 'start_parts', label: 'وقت الحصة', type: 'timerow', inlineLabel: 'من:',
+    value: { hour: '05', minute: '30', period: 'evening' },
+    hourOptions: [{ value: '05', label: '05' }],
+    minuteOptions: [{ value: '30', label: '30' }],
+    periodOptions: [{ value: 'evening', label: 'مساءً' }]
+  };
+  const group = modal._buildField(spec);
+
+  const row = modal.fields[0].control;
+  // flex row => hour/minute/period are BESIDE each other, not stacked
+  assert.match(row._cssText, /display:flex/);
+  const selects = row.children.filter(c => c.tag === 'select');
+  assert.equal(selects.length, 3);
+  // inline label "من:" is the first child of the row
+  assert.equal(row.children[0].textContent, 'من:');
+  // the ":" separator sits between hour and minute
+  const sepIndex = row.children.findIndex(c => c.textContent === ':');
+  assert.ok(sepIndex > 0, 'separator exists');
+  assert.equal(row.children[sepIndex - 1].tag, 'select');
+  assert.equal(row.children[sepIndex + 1].tag, 'select');
+  // collected value is the {hour, minute, period} object
+  const values = AppModal.prototype._collect.call(modal);
+  assert.deepEqual(toPlain(values.start_parts), { hour: '05', minute: '30', period: 'evening' });
+  // the block label is present for "وقت الحصة"
+  assert.ok(group.children.some(c => c.textContent === 'وقت الحصة'));
+  // an empty label ('') suppresses the block label (used by the إلى row)
+  modal.fields = [];
+  const endGroup = modal._buildField({ ...spec, name: 'end_parts', label: '', inlineLabel: 'إلى:' });
+  assert.ok(!endGroup.children.some(c => c.textContent === 'وقت الحصة *' || c.textContent === 'وقت الحصة'));
+  assert.equal(modal.fields[0].control.children[0].textContent, 'إلى:');
 });
 
 // ---------------------------------------------------------------
@@ -419,7 +621,9 @@ test('28 backend requires a valid name, at least one canonical day, and canonica
   assert.match(php, /يرجى اختيار يوم دراسة واحد على الأقل/);
   assert.match(php, /أيام الدراسة غير صالحة/);
   assert.match(php, /\/\^\(\?:\[01\]\\d\|2\[0-3\]\):\[0-5\]\\d\$\//);
-  assert.match(php, /موعد الحصة غير صالح/);
+  assert.match(php, /موعد بداية الحصة غير صالح/);
+  assert.match(php, /موعد نهاية الحصة غير صالح/);
+  assert.match(php, /وقت نهاية الحصة يجب أن يكون بعد وقت بدايتها/);
   assert.match(php, /sprintf\('%02d:%02d'/);
 });
 

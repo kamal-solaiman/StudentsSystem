@@ -113,9 +113,13 @@ function teacherUnicodeLength(string $s): int
  * client — the caller passes the session tenant id — and the selected
  * academic class is re-verified against academic_classes.teacher_id.
  *
- * Stored conventions (matching database/schema.sql, no schema change):
+ * Stored conventions (matching database/schema.sql):
  *  - study_days   → JSON array of canonical Arabic day names (deduped, week order)
- *  - class_time   → canonical 24h "HH:MM" (never a localized Arabic string)
+ *  - class_time   → canonical 24h "HH:MM" lesson START (never a localized
+ *                   Arabic string; legacy rows may still hold one and are
+ *                   preserved until the teacher edits them)
+ *  - end_time     → canonical 24h "HH:MM" lesson END, strictly after the
+ *                   start (P1-J-FIX; nullable for legacy rows)
  *  - shift        → ENUM('morning','evening'), default 'evening'
  *  - price        → numeric, >= 0, at most 2 decimals (DECIMAL(10,2))
  *  - payment_scheme → ENUM('monthly','per_session')
@@ -179,13 +183,29 @@ function teacherValidateStudyGroupPayload(array $payload, PDO $db, int $teacherI
         }
     }
 
-    // Lesson time: canonical 24h "HH:MM" only.
-    $timeRaw = $payload['class_time'] ?? null;
-    if (!is_string($timeRaw) || preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', trim($timeRaw)) !== 1) {
-        Helper::sendJson(['success' => false, 'error' => 'موعد الحصة غير صالح'], 400);
+    // Lesson time range (P1-J-FIX): canonical 24h "HH:MM" start AND end,
+    // both required, end strictly after start. No localized strings, no
+    // seconds, no out-of-range hour/minute values.
+    $startRaw = $payload['start_time'] ?? null;
+    if (!is_string($startRaw) || preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', trim($startRaw)) !== 1) {
+        Helper::sendJson(['success' => false, 'error' => 'موعد بداية الحصة غير صالح'], 400);
     }
-    [$hourPart, $minutePart] = explode(':', trim($timeRaw));
+    [$hourPart, $minutePart] = explode(':', trim($startRaw));
     $classTime = sprintf('%02d:%02d', (int)$hourPart, (int)$minutePart);
+
+    $endRaw = $payload['end_time'] ?? null;
+    if (!is_string($endRaw) || preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', trim($endRaw)) !== 1) {
+        Helper::sendJson(['success' => false, 'error' => 'موعد نهاية الحصة غير صالح'], 400);
+    }
+    [$endHourPart, $endMinutePart] = explode(':', trim($endRaw));
+    $endTime = sprintf('%02d:%02d', (int)$endHourPart, (int)$endMinutePart);
+
+    // end > start (same day). Equal times are rejected too.
+    $startMinutes = ((int)$hourPart) * 60 + (int)$minutePart;
+    $endMinutes = ((int)$endHourPart) * 60 + (int)$endMinutePart;
+    if ($endMinutes <= $startMinutes) {
+        Helper::sendJson(['success' => false, 'error' => 'وقت نهاية الحصة يجب أن يكون بعد وقت بدايتها'], 400);
+    }
 
     // Shift: schema ENUM('morning','evening'), default 'evening'.
     $shiftRaw = $payload['shift'] ?? 'evening';
@@ -221,6 +241,7 @@ function teacherValidateStudyGroupPayload(array $payload, PDO $db, int $teacherI
         'class_id' => $classId,
         'study_days' => $orderedDays,
         'class_time' => $classTime,
+        'end_time' => $endTime,
         'shift' => $shiftRaw,
         'price' => number_format($price, 2, '.', ''),
         'payment_scheme' => $schemeRaw,
@@ -360,6 +381,10 @@ try {
                 'name' => (string)$row['name'],
                 'study_days' => $studyDays,
                 'class_time' => (string)$row['class_time'],
+                // P1-J-FIX: nullable for legacy rows created before the
+                // من/إلى range existed; the UI then shows only the start.
+                'end_time' => isset($row['end_time']) && $row['end_time'] !== null && $row['end_time'] !== ''
+                    ? (string)$row['end_time'] : null,
                 'shift' => (string)$row['shift'],
                 'price' => (float)$row['price'],
                 'payment_scheme' => (string)$row['payment_scheme'],
@@ -610,8 +635,8 @@ try {
             $group = teacherValidateStudyGroupPayload($payload, $db, $teacherId);
 
             $stmt = $db->prepare('
-                INSERT INTO study_groups (teacher_id, class_id, name, study_days, class_time, shift, price, payment_scheme)
-                VALUES (:tid, :cid, :name, :days, :time, :shift, :price, :scheme)
+                INSERT INTO study_groups (teacher_id, class_id, name, study_days, class_time, end_time, shift, price, payment_scheme)
+                VALUES (:tid, :cid, :name, :days, :time, :end_time, :shift, :price, :scheme)
             ');
             $stmt->execute([
                 'tid' => $teacherId,
@@ -619,6 +644,7 @@ try {
                 'name' => $group['name'],
                 'days' => json_encode($group['study_days'], JSON_UNESCAPED_UNICODE),
                 'time' => $group['class_time'],
+                'end_time' => $group['end_time'],
                 'shift' => $group['shift'],
                 'price' => $group['price'],
                 'scheme' => $group['payment_scheme']
@@ -659,8 +685,8 @@ try {
             $stmt = $db->prepare('
                 UPDATE study_groups
                 SET class_id = :cid, name = :name, study_days = :days,
-                    class_time = :time, shift = :shift, price = :price,
-                    payment_scheme = :scheme
+                    class_time = :time, end_time = :end_time, shift = :shift,
+                    price = :price, payment_scheme = :scheme
                 WHERE id = :gid AND teacher_id = :tid
             ');
             $stmt->execute([
@@ -670,6 +696,7 @@ try {
                 'name' => $group['name'],
                 'days' => json_encode($group['study_days'], JSON_UNESCAPED_UNICODE),
                 'time' => $group['class_time'],
+                'end_time' => $group['end_time'],
                 'shift' => $group['shift'],
                 'price' => $group['price'],
                 'scheme' => $group['payment_scheme']
