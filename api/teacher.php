@@ -80,6 +80,153 @@ function teacherAcademicClassName(string $educationalStage, string $grade): stri
     return 'الصف ' . $gradeLabels[$grade] . ' ' . $catalog[$educationalStage]['adjective'];
 }
 
+/**
+ * P1-J: Canonical study-day catalog, in the Arabic week order already used by
+ * the existing `study_groups.study_days` JSON convention (database/seed.sql).
+ * Client-submitted days are validated against this list and stored as Arabic
+ * day names — no new storage representation is introduced.
+ */
+function teacherStudyDayCatalog(): array
+{
+    return ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'];
+}
+
+/**
+ * P1-J: Unicode-aware string length (mbstring optional, same fallback logic
+ * as the class validators) so group-name limits behave for Arabic text.
+ */
+function teacherUnicodeLength(string $s): int
+{
+    if (function_exists('mb_strlen')) {
+        return mb_strlen($s, 'UTF-8');
+    }
+    if (strlen($s) > 4000) {
+        return 1001;
+    }
+    $count = preg_match_all('/./us', $s, $matches);
+    return $count === false ? strlen($s) : $count;
+}
+
+/**
+ * P1-J: Backend-authoritative study-group payload validation (shared by
+ * create_group and update_group). teacher_id is NEVER accepted from the
+ * client — the caller passes the session tenant id — and the selected
+ * academic class is re-verified against academic_classes.teacher_id.
+ *
+ * Stored conventions (matching database/schema.sql, no schema change):
+ *  - study_days   → JSON array of canonical Arabic day names (deduped, week order)
+ *  - class_time   → canonical 24h "HH:MM" (never a localized Arabic string)
+ *  - shift        → ENUM('morning','evening'), default 'evening'
+ *  - price        → numeric, >= 0, at most 2 decimals (DECIMAL(10,2))
+ *  - payment_scheme → ENUM('monthly','per_session')
+ */
+function teacherValidateStudyGroupPayload(array $payload, PDO $db, int $teacherId): array
+{
+    // Group name: required, trimmed, max 150 chars (schema VARCHAR(150)).
+    $nameRaw = $payload['name'] ?? null;
+    if (!is_string($nameRaw) || trim($nameRaw) === '') {
+        Helper::sendJson(['success' => false, 'error' => 'اسم المجموعة مطلوب'], 400);
+    }
+    $name = Helper::sanitizeString(trim($nameRaw));
+    if (teacherUnicodeLength($name) > 150) {
+        Helper::sendJson(['success' => false, 'error' => 'اسم المجموعة طويل جداً (الحد الأقصى 150 حرفاً)'], 400);
+    }
+
+    // Academic class: required integer id that MUST belong to the session tenant.
+    $classIdRaw = $payload['class_id'] ?? null;
+    $classIdIsValid = is_int($classIdRaw)
+        || (is_string($classIdRaw) && $classIdRaw !== '' && ctype_digit($classIdRaw));
+    if (!$classIdIsValid || (int)$classIdRaw <= 0) {
+        Helper::sendJson(['success' => false, 'error' => 'الصف الدراسي مطلوب'], 400);
+    }
+    $classId = (int)$classIdRaw;
+    $stmtClassExists = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid LIMIT 1');
+    $stmtClassExists->execute(['cid' => $classId]);
+    if ($stmtClassExists->fetch() === false) {
+        Helper::sendNotFound('الصف الدراسي غير موجود');
+    }
+    $stmtClassOwn = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
+    $stmtClassOwn->execute(['cid' => $classId, 'tid' => $teacherId]);
+    if ($stmtClassOwn->fetch() === false) {
+        Helper::sendForbidden('Access denied');
+    }
+
+    // Study days: required non-empty array of canonical Arabic day names.
+    $daysInput = $payload['study_days'] ?? null;
+    if (!is_array($daysInput) || count($daysInput) === 0) {
+        Helper::sendJson(['success' => false, 'error' => 'يرجى اختيار يوم دراسة واحد على الأقل'], 400);
+    }
+    $catalog = teacherStudyDayCatalog();
+    $acceptedDays = [];
+    foreach ($daysInput as $day) {
+        if (!is_string($day)) {
+            continue; // malformed entries are ignored, never trusted
+        }
+        $day = trim($day);
+        if (!in_array($day, $catalog, true) || in_array($day, $acceptedDays, true)) {
+            continue; // invalid or duplicate values are dropped
+        }
+        $acceptedDays[] = $day;
+    }
+    if (count($acceptedDays) === 0) {
+        Helper::sendJson(['success' => false, 'error' => 'أيام الدراسة غير صالحة'], 400);
+    }
+    // Normalize to canonical week order regardless of the client order.
+    $orderedDays = [];
+    foreach ($catalog as $day) {
+        if (in_array($day, $acceptedDays, true)) {
+            $orderedDays[] = $day;
+        }
+    }
+
+    // Lesson time: canonical 24h "HH:MM" only.
+    $timeRaw = $payload['class_time'] ?? null;
+    if (!is_string($timeRaw) || preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', trim($timeRaw)) !== 1) {
+        Helper::sendJson(['success' => false, 'error' => 'موعد الحصة غير صالح'], 400);
+    }
+    [$hourPart, $minutePart] = explode(':', trim($timeRaw));
+    $classTime = sprintf('%02d:%02d', (int)$hourPart, (int)$minutePart);
+
+    // Shift: schema ENUM('morning','evening'), default 'evening'.
+    $shiftRaw = $payload['shift'] ?? 'evening';
+    if (!is_string($shiftRaw) || !in_array($shiftRaw, ['morning', 'evening'], true)) {
+        Helper::sendJson(['success' => false, 'error' => 'الفترة غير صالحة (صباحي أو مسائي)'], 400);
+    }
+
+    // Price: required numeric, >= 0, DECIMAL(10,2) → at most 2 decimals.
+    $priceRaw = $payload['price'] ?? null;
+    if (!is_int($priceRaw) && !is_float($priceRaw) && !(is_string($priceRaw) && is_numeric($priceRaw))) {
+        Helper::sendJson(['success' => false, 'error' => 'سعر الدرس مطلوب ويجب أن يكون رقمًا'], 400);
+    }
+    $price = (float)$priceRaw;
+    if ($price < 0) {
+        Helper::sendJson(['success' => false, 'error' => 'سعر الدرس لا يمكن أن يكون سالبًا'], 400);
+    }
+    if ($price > 99999999.99) {
+        Helper::sendJson(['success' => false, 'error' => 'سعر الدرس يتجاوز الحد الأقصى المسموح'], 400);
+    }
+    if (round($price, 2) !== $price) {
+        Helper::sendJson(['success' => false, 'error' => 'سعر الدرس يجب ألا يتضمن أكثر من رقمين عشريين'], 400);
+    }
+
+    // Payment scheme: schema ENUM('monthly','per_session') only — the UI
+    // exposes the Arabic labels for exactly these database values.
+    $schemeRaw = $payload['payment_scheme'] ?? null;
+    if (!is_string($schemeRaw) || !in_array($schemeRaw, ['monthly', 'per_session'], true)) {
+        Helper::sendJson(['success' => false, 'error' => 'نظام الدفع غير صالح'], 400);
+    }
+
+    return [
+        'name' => $name,
+        'class_id' => $classId,
+        'study_days' => $orderedDays,
+        'class_time' => $classTime,
+        'shift' => $shiftRaw,
+        'price' => number_format($price, 2, '.', ''),
+        'payment_scheme' => $schemeRaw,
+    ];
+}
+
 Helper::handleCorsOptions();
 
 // SECURITY: Require authentication for all teacher endpoints
@@ -180,9 +327,12 @@ try {
             ];
         }
 
-        // Study Groups
+        // Study Groups (P1-J: student count exposed for the groups list; the
+        // count is scoped to the session tenant's own enrollments only)
         $stmtGroups = $db->prepare('
-            SELECT sg.*, ac.name AS class_name 
+            SELECT sg.*, ac.name AS class_name,
+                   (SELECT COUNT(*) FROM student_enrollments se
+                     WHERE se.group_id = sg.id AND se.teacher_id = sg.teacher_id) AS student_count
             FROM study_groups sg 
             LEFT JOIN academic_classes ac ON sg.class_id = ac.id 
             WHERE sg.teacher_id = :tid 
@@ -192,16 +342,28 @@ try {
         $groupsRaw = $stmtGroups->fetchAll();
         $groups = [];
         foreach ($groupsRaw as $row) {
+            // Malformed JSON must never surface as a non-array value to the
+            // frontend (which calls Array.isArray / join on it).
+            $decodedDays = json_decode((string)$row['study_days'], true);
+            $studyDays = [];
+            if (is_array($decodedDays)) {
+                foreach ($decodedDays as $day) {
+                    if (is_string($day)) {
+                        $studyDays[] = $day;
+                    }
+                }
+            }
             $groups[] = [
                 'id' => (int)$row['id'],
                 'class_id' => (int)$row['class_id'],
                 'class_name' => (string)$row['class_name'],
                 'name' => (string)$row['name'],
-                'study_days' => json_decode((string)$row['study_days'], true) ?: [],
+                'study_days' => $studyDays,
                 'class_time' => (string)$row['class_time'],
                 'shift' => (string)$row['shift'],
                 'price' => (float)$row['price'],
-                'payment_scheme' => (string)$row['payment_scheme']
+                'payment_scheme' => (string)$row['payment_scheme'],
+                'student_count' => (int)$row['student_count']
             ];
         }
 
@@ -310,7 +472,7 @@ try {
         if ($user['role'] === 'staff') {
             if ($action === 'create_class' || $action === 'update_class' || $action === 'delete-class') {
                 AuthManager::requirePermission('classes');
-            } elseif ($action === 'create_group' || $action === 'delete-group') {
+            } elseif ($action === 'create_group' || $action === 'update_group' || $action === 'delete-group') {
                 AuthManager::requirePermission('groups');
             } elseif ($action === 'create_student' || $action === 'enroll_existing_student') {
                 AuthManager::requirePermission('students');
@@ -442,21 +604,10 @@ try {
 
         // Create Study Group
         if ($action === 'create_group') {
-            $classId = (int)($payload['class_id'] ?? 1);
-
-            // SECURITY (P1-B): Verify the class belongs to this teacher's tenant
-            $stmtChk = $db->prepare('SELECT id FROM academic_classes WHERE id = :cid AND teacher_id = :tid LIMIT 1');
-            $stmtChk->execute(['cid' => $classId, 'tid' => $teacherId]);
-            if ($stmtChk->fetch() === false) {
-                Helper::sendForbidden('Access denied');
-            }
-
-            $name = Helper::sanitizeString($payload['name'] ?? '');
-            $studyDays = json_encode($payload['study_days'] ?? ['الأحد', 'الثلاثاء'], JSON_UNESCAPED_UNICODE);
-            $time = Helper::sanitizeString($payload['class_time'] ?? '05:00 مساءً');
-            $shift = Helper::sanitizeString($payload['shift'] ?? 'evening');
-            $price = (float)($payload['price'] ?? 300.0);
-            $scheme = Helper::sanitizeString($payload['payment_scheme'] ?? 'monthly');
+            // SECURITY (P1-J): full backend-authoritative validation. The
+            // class must belong to the session tenant; teacher_id comes only
+            // from tenant_teacher_id and is never read from the payload.
+            $group = teacherValidateStudyGroupPayload($payload, $db, $teacherId);
 
             $stmt = $db->prepare('
                 INSERT INTO study_groups (teacher_id, class_id, name, study_days, class_time, shift, price, payment_scheme)
@@ -464,16 +615,71 @@ try {
             ');
             $stmt->execute([
                 'tid' => $teacherId,
-                'cid' => $classId,
-                'name' => $name,
-                'days' => $studyDays,
-                'time' => $time,
-                'shift' => $shift,
-                'price' => $price,
-                'scheme' => $scheme
+                'cid' => $group['class_id'],
+                'name' => $group['name'],
+                'days' => json_encode($group['study_days'], JSON_UNESCAPED_UNICODE),
+                'time' => $group['class_time'],
+                'shift' => $group['shift'],
+                'price' => $group['price'],
+                'scheme' => $group['payment_scheme']
             ]);
 
-            Helper::sendJson(['success' => true, 'message' => 'تم إضافة المجموعة الدراسية بنجاح']);
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم إضافة المجموعة الدراسية بنجاح',
+                'id' => (int)$db->lastInsertId()
+            ]);
+        }
+
+        // Update Study Group (P1-J). Ownership-aware like update_class:
+        // 404 when absent, 403 when owned by another tenant; the update
+        // itself is scoped by id AND teacher_id.
+        if ($action === 'update_group') {
+            $idRaw = $payload['id'] ?? null;
+            $idIsValid = is_int($idRaw)
+                || (is_string($idRaw) && $idRaw !== '' && ctype_digit($idRaw));
+            if (!$idIsValid || (int)$idRaw <= 0) {
+                Helper::sendJson(['success' => false, 'error' => 'معرف المجموعة غير صالح'], 400);
+            }
+            $groupId = (int)$idRaw;
+
+            $stmtExists = $db->prepare('SELECT id FROM study_groups WHERE id = :gid LIMIT 1');
+            $stmtExists->execute(['gid' => $groupId]);
+            if ($stmtExists->fetch() === false) {
+                Helper::sendNotFound('المجموعة غير موجودة');
+            }
+
+            $stmtOwn = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1');
+            $stmtOwn->execute(['gid' => $groupId, 'tid' => $teacherId]);
+            if ($stmtOwn->fetch() === false) {
+                Helper::sendForbidden('Access denied');
+            }
+
+            $group = teacherValidateStudyGroupPayload($payload, $db, $teacherId);
+            $stmt = $db->prepare('
+                UPDATE study_groups
+                SET class_id = :cid, name = :name, study_days = :days,
+                    class_time = :time, shift = :shift, price = :price,
+                    payment_scheme = :scheme
+                WHERE id = :gid AND teacher_id = :tid
+            ');
+            $stmt->execute([
+                'gid' => $groupId,
+                'tid' => $teacherId,
+                'cid' => $group['class_id'],
+                'name' => $group['name'],
+                'days' => json_encode($group['study_days'], JSON_UNESCAPED_UNICODE),
+                'time' => $group['class_time'],
+                'shift' => $group['shift'],
+                'price' => $group['price'],
+                'scheme' => $group['payment_scheme']
+            ]);
+
+            Helper::sendJson([
+                'success' => true,
+                'message' => 'تم تحديث المجموعة الدراسية بنجاح',
+                'name' => $group['name']
+            ]);
         }
 
         // Create New Student & Enroll with Teacher
@@ -706,8 +912,65 @@ try {
         }
 
         if ($entity === 'group' && $id > 0) {
-            $stmt = $db->prepare('DELETE FROM study_groups WHERE id = :id AND teacher_id = :tid');
-            $stmt->execute(['id' => $id, 'tid' => $teacherId]);
+            // SECURITY (P1-J): Never delete another teacher's group and never
+            // delete a group that still has dependent data. The row is locked
+            // (FOR UPDATE) while dependencies are counted, mirroring the
+            // P1-I class-delete pattern.
+            $db->beginTransaction();
+            try {
+                $stmtOwn = $db->prepare('SELECT id FROM study_groups WHERE id = :gid AND teacher_id = :tid LIMIT 1 FOR UPDATE');
+                $stmtOwn->execute(['gid' => $id, 'tid' => $teacherId]);
+                if ($stmtOwn->fetch() === false) {
+                    $db->rollBack();
+                    // Distinguish 404 (group does not exist) from 403 (exists
+                    // but belongs to another teacher) per project convention.
+                    $stmtExists = $db->prepare('SELECT id FROM study_groups WHERE id = :gid LIMIT 1');
+                    $stmtExists->execute(['gid' => $id]);
+                    if ($stmtExists->fetch() === false) {
+                        Helper::sendNotFound('المجموعة غير موجودة');
+                    }
+                    Helper::sendForbidden('Access denied');
+                }
+
+                // SECURITY (P1-J): refuse with 409 instead of silently
+                // orphaning enrollment / attendance / exam / homework /
+                // lesson-video rows that keep a group_id reference.
+                $stmtDeps = $db->prepare('
+                    SELECT
+                        (SELECT COUNT(*) FROM student_enrollments WHERE group_id = :gid1) AS enrollment_count,
+                        (SELECT COUNT(*) FROM attendance_records WHERE group_id = :gid2) AS attendance_count,
+                        (SELECT COUNT(*) FROM exams WHERE group_id = :gid3) AS exam_count,
+                        (SELECT COUNT(*) FROM homeworks WHERE group_id = :gid4) AS homework_count,
+                        (SELECT COUNT(*) FROM lesson_videos WHERE group_id = :gid5) AS video_count
+                ');
+                $stmtDeps->execute(['gid1' => $id, 'gid2' => $id, 'gid3' => $id, 'gid4' => $id, 'gid5' => $id]);
+                $deps = $stmtDeps->fetch();
+                $dependent = (int)($deps['enrollment_count'] ?? 0)
+                    + (int)($deps['attendance_count'] ?? 0)
+                    + (int)($deps['exam_count'] ?? 0)
+                    + (int)($deps['homework_count'] ?? 0)
+                    + (int)($deps['video_count'] ?? 0);
+                if ($dependent > 0) {
+                    $db->rollBack();
+                    Helper::sendJson([
+                        'success' => false,
+                        'message' => 'لا يمكن حذف المجموعة لارتباطها ببيانات أخرى (طلاب مسجلين، سجلات حضور، امتحانات، واجبات أو دروس مسجلة). احذف البيانات المرتبطة أولاً.'
+                    ], 409);
+                }
+
+                $stmt = $db->prepare('DELETE FROM study_groups WHERE id = :id AND teacher_id = :tid');
+                $stmt->execute(['id' => $id, 'tid' => $teacherId]);
+                if ($stmt->rowCount() === 0) {
+                    $db->rollBack();
+                    Helper::sendNotFound('المجموعة غير موجودة');
+                }
+                $db->commit();
+            } catch (Throwable $ex) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
+                throw $ex;
+            }
             Helper::sendJson(['success' => true, 'message' => 'تم حذف المجموعة بنجاح']);
         }
 

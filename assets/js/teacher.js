@@ -65,6 +65,138 @@ function getAcademicClassParts(cls) {
   return LEGACY_CLASS_LEVELS[level] || { educational_stage: '', grade: '' };
 }
 
+/* ================================================================
+ * P1-J: Study Groups vocabulary & time helpers.
+ * The Arabic day list matches the backend catalog (api/teacher.php)
+ * and the existing study_groups.study_days JSON convention.
+ * class_time is stored canonically as 24h "HH:MM"; legacy rows may
+ * still hold Arabic display strings, which pass through untouched.
+ * ================================================================ */
+
+const STUDY_DAY_OPTIONS = [
+  { value: 'السبت', label: 'السبت' },
+  { value: 'الأحد', label: 'الأحد' },
+  { value: 'الإثنين', label: 'الإثنين' },
+  { value: 'الثلاثاء', label: 'الثلاثاء' },
+  { value: 'الأربعاء', label: 'الأربعاء' },
+  { value: 'الخميس', label: 'الخميس' },
+  { value: 'الجمعة', label: 'الجمعة' }
+];
+const STUDY_DAY_VALUES = STUDY_DAY_OPTIONS.map(option => option.value);
+
+// Database ENUM('monthly','per_session') — the ONLY values the schema allows.
+const GROUP_PAYMENT_OPTIONS = [
+  { value: 'monthly', label: 'شهري' },
+  { value: 'per_session', label: 'لكل حصة' }
+];
+const GROUP_PAYMENT_LABELS = Object.fromEntries(
+  GROUP_PAYMENT_OPTIONS.map(option => [option.value, option.label])
+);
+
+const GROUP_HOUR_OPTIONS = Array.from({ length: 12 }, (_, index) => {
+  const hour = String(index + 1).padStart(2, '0');
+  return { value: hour, label: hour };
+});
+const GROUP_MINUTE_OPTIONS = Array.from({ length: 12 }, (_, index) => {
+  const minute = String(index * 5).padStart(2, '0');
+  return { value: minute, label: minute };
+});
+const GROUP_PERIOD_OPTIONS = [
+  { value: 'morning', label: 'صباحاً' },
+  { value: 'evening', label: 'مساءً' }
+];
+
+/**
+ * Canonical 24h "HH:MM" from the modal's hour (1-12) / minute / period
+ * selection — no localized strings ever reach the database.
+ */
+function buildGroupClassTime(hour, minute, period) {
+  let h = Number(hour);
+  const m = Number(minute);
+  if (!Number.isInteger(h) || h < 1 || h > 12) h = 5;
+  if (!Number.isInteger(m) || m < 0 || m > 59) m = 0;
+  if (period === 'evening') {
+    if (h !== 12) h += 12;
+  } else if (h === 12) {
+    h = 0;
+  }
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * Pre-fill values for the edit modal from a stored group.
+ * Accepts the canonical "HH:MM" (24h), legacy Arabic strings such as
+ * "05:00 مساءً", and falls back to 05:00 + the stored shift.
+ */
+function parseGroupClassTime(classTime, shift) {
+  const raw = String(classTime || '').trim();
+  const fallbackPeriod = String(shift || '') === 'morning' ? 'morning' : 'evening';
+  const toTwelveHour = (h) => {
+    if (h === 0) return { hour: '12', period: 'morning' };
+    if (h > 12) return { hour: String(h - 12).padStart(2, '0'), period: 'evening' };
+    return { hour: String(h).padStart(2, '0'), period: h === 12 ? 'evening' : 'morning' };
+  };
+
+  const legacy = raw.match(/^(\d{1,2}):(\d{2})\s*(صباحاً|مساءً|ص|م)?\s*$/);
+  if (legacy) {
+    let h = Number(legacy[1]);
+    const suffix = legacy[3] ? String(legacy[3]).trim() : '';
+    let period = fallbackPeriod;
+    if (suffix) {
+      period = suffix === 'ص' || suffix.startsWith('ص') ? 'morning' : 'evening';
+    } else {
+      const converted = toTwelveHour(h);
+      return { hour: converted.hour, minute: legacy[2], period: converted.period };
+    }
+    if (period === 'evening' && h !== 12) h += 12;
+    if (period === 'morning' && h === 12) h = 0;
+    const converted = toTwelveHour(h);
+    return { hour: converted.hour, minute: legacy[2], period };
+  }
+
+  const canonical = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (canonical) {
+    const converted = toTwelveHour(Number(canonical[1]));
+    return { hour: converted.hour, minute: canonical[2], period: converted.period };
+  }
+
+  return { hour: '05', minute: '00', period: fallbackPeriod };
+}
+
+/**
+ * Arabic display of a stored class_time for the groups table.
+ * Canonical "HH:MM" is rendered as 12h + صباحاً/مساءً; legacy Arabic
+ * display strings (e.g. "05:00 مساءً") pass through unchanged.
+ */
+function formatGroupClassTime(classTime) {
+  const raw = String(classTime || '').trim();
+  if (raw === '') return '—';
+  if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(raw)) {
+    return raw; // legacy display string — show as stored
+  }
+  const hour24 = Number(raw.split(':')[0]);
+  const minute = raw.split(':')[1];
+  const period = hour24 >= 12 ? 'مساءً' : 'صباحاً';
+  const hour12 = hour24 === 0 ? 12 : (hour24 > 12 ? hour24 - 12 : hour24);
+  return `${String(hour12).padStart(2, '0')}:${minute} ${period}`;
+}
+
+/**
+ * Deduplicate client-selected days and order them by the canonical Arabic
+ * week. Invalid values never reach the payload (backend is authoritative).
+ */
+function normalizeStudyDays(days) {
+  const list = Array.isArray(days) ? days.map(day => String(day).trim()) : [];
+  return STUDY_DAY_VALUES.filter(day => list.includes(day));
+}
+
+/** Tag an error as a validation failure so AppModal surfaces the Arabic text. */
+function groupValidationError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
 class TeacherController {
   constructor(containerElement, data, onRefreshCallback) {
     this.container = containerElement;
@@ -73,6 +205,11 @@ class TeacherController {
     this.activeTab = 'overview';
     this.examSubTab = 'questions';
     this.attendanceMethod = 'dynamic_qr';
+
+    // P1-I: inline message banner for the Academic Classes tab.
+    this.classesMessage = null;
+    // P1-J: inline message banner for the Study Groups tab.
+    this.groupsMessage = null;
 
     // P1-G: dynamic QR broadcast screen state. The token is signed server-side;
     // the frontend only displays it, counts down, and auto-refreshes. No HMAC,
@@ -414,42 +551,82 @@ class TeacherController {
   }
 
   renderGroups() {
+    const groups = this.data.groups || [];
+    const classes = this.data.classes || [];
+
     let listHtml = '';
-    (this.data.groups || []).forEach(g => {
+    groups.forEach(g => {
+      const days = Array.isArray(g.study_days) ? g.study_days : [];
+      const price = Number.isFinite(Number(g.price)) ? Number(g.price).toFixed(2) : '0.00';
+      const schemeLabel = GROUP_PAYMENT_LABELS[g.payment_scheme] || '—';
       listHtml += `
         <tr style="border-bottom: 1px solid #e2e8f0;">
           <td style="padding: 1rem; font-weight: 800;">${g.name}</td>
           <td style="padding: 1rem;">${g.class_name || 'عام'}</td>
-          <td style="padding: 1rem;">${(g.study_days || []).join('، ')}</td>
-          <td style="padding: 1rem;">${g.class_time}</td>
-          <td style="padding: 1rem;">${g.shift === 'morning' ? 'صباحي' : 'مسائي'}</td>
-          <td style="padding: 1rem; font-weight: 800;">${g.price} ج.م</td>
+          <td style="padding: 1rem;">${days.join('، ') || '—'}</td>
+          <td style="padding: 1rem;">${formatGroupClassTime(g.class_time)}</td>
+          <td style="padding: 1rem; font-weight: 800;">${price} ج.م</td>
           <td style="padding: 1rem;">
             <span style="background: #e0e7ff; color: #4f46e5; padding: 0.25rem 0.65rem; border-radius: 0.5rem; font-size: 0.75rem; font-weight: 700;">
-              ${g.payment_scheme === 'monthly' ? 'شهري' : 'بالحصة'}
+              ${schemeLabel}
             </span>
           </td>
+          <td style="padding: 1rem; font-weight: 800; color: #059669;">${Number(g.student_count) || 0}</td>
           <td style="padding: 1rem;">
-            <button class="btn btn-danger btn-sm" data-action="delete-group" data-id="${g.id}">حذف</button>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="btn btn-secondary btn-sm" data-action="edit-group" data-id="${g.id}">تعديل</button>
+              <button class="btn btn-danger btn-sm" data-action="delete-group" data-id="${g.id}">حذف</button>
+            </div>
           </td>
         </tr>
       `;
     });
 
-    // P1-F: Empty state (distinct from Loading / Error)
-    if ((this.data.groups || []).length === 0) {
-      listHtml = this.renderEmptyRow(8, 'لا توجد مجموعات دراسية حاليًا');
+    // P1-F: Empty state (distinct from Loading / Error) with the required text
+    if (groups.length === 0) {
+      listHtml = this.renderEmptyRow(8, 'لا توجد مجموعات دراسية');
     }
+
+    // P1-J: group creation requires at least one academic class (the selector
+    // is populated exclusively from the authenticated teacher's classes).
+    const needClassNotice = classes.length === 0 ? `
+      <div style="margin: 1rem 1rem 0; padding: 0.9rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; background: #fffbeb; color: #92400e; border: 1px solid #fde68a;">
+        يجب إضافة صف دراسي أولاً قبل إنشاء مجموعة.
+        <button class="btn btn-secondary btn-sm" data-action="goto-classes" style="margin-inline-start: 0.75rem;">إضافة صف دراسي</button>
+      </div>
+    ` : '';
+
+    // P1-J: inline success/error message banner (no page reload required)
+    const messageBox = this.groupsMessage ? `
+      <div id="groups-action-message" style="margin: 1rem 1rem 0; padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; ${this.groupsMessage.isError
+        ? 'background:#fef2f2; color:#b91c1c; border:1px solid #fecdd3;'
+        : 'background:#ecfdf5; color:#047857; border:1px solid #a7f3d0;'}">
+        ${this.groupsMessage.text}
+      </div>
+    ` : '';
+
+    // P1-F: empty-state CTA so teachers can add their first group in-place
+    const emptyCta = groups.length === 0 && classes.length > 0 ? `
+      <div style="text-align: center; padding: 0.25rem 0 1.5rem;">
+        <button class="btn btn-primary" data-action="open-group-modal">+ إضافة مجموعة</button>
+      </div>
+    ` : '';
+
+    const headerButton = classes.length > 0
+      ? '<button class="btn btn-primary" data-action="open-group-modal">+ إضافة مجموعة</button>'
+      : '<button class="btn btn-primary" data-action="goto-classes">إضافة صف دراسي</button>';
 
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem;">
         <div class="card-header">
           <div>
             <h3 style="font-weight: 800; font-size: 1.15rem;">المجموعات الدراسية (Study Groups)</h3>
-            <p style="font-size: 0.8rem; color: #64748b;">تحديد أيام الدراسة، وقت الحصة، صباحي/مسائي، السعر، ونظام الدفع (شهري / بالحصة)</p>
+            <p style="font-size: 0.8rem; color: #64748b;">تحديد أيام الدراسة، موعد الحصة، السعر، ونظام الدفع (شهري / لكل حصة)</p>
           </div>
-          <button class="btn btn-primary" id="open-group-modal">+ إضافة مجموعة جديدة</button>
+          ${headerButton}
         </div>
+        ${needClassNotice}
+        ${messageBox}
         <div class="table-responsive">
           <table>
             <thead>
@@ -457,18 +634,192 @@ class TeacherController {
                 <th>اسم المجموعة</th>
                 <th>الصف الدراسي</th>
                 <th>أيام الدراسة</th>
-                <th>وقت الحصة</th>
-                <th>الشفت</th>
-                <th>السعر</th>
+                <th>موعد الحصة</th>
+                <th>سعر الدرس</th>
                 <th>نظام الدفع</th>
-                <th>إجراءات</th>
+                <th>عدد الطلاب</th>
+                <th>الإجراءات</th>
               </tr>
             </thead>
             <tbody>${listHtml}</tbody>
           </table>
         </div>
+        ${emptyCta}
       </div>
     `;
+  }
+
+  /* ================================================================
+   * P1-J: Study Groups CRUD — add / edit / delete via the existing
+   * central modal helper (AppModal). All authorization, ownership
+   * (session tenant teacher_id) and validation are enforced
+   * server-side; client-side checks here are UX only.
+   * ================================================================ */
+
+  /** Show an inline success/error banner in the groups tab. */
+  showGroupsMessage(message, isError = false) {
+    this.groupsMessage = { text: message, isError: !!isError };
+    if (this.activeTab === 'groups') this.render();
+    // Auto-dismiss after 6s (DOM-only removal — no full re-render).
+    setTimeout(() => {
+      if (this.groupsMessage && this.groupsMessage.text === message) {
+        this.groupsMessage = null;
+        const box = document.getElementById('groups-action-message');
+        if (box && box.parentNode) box.parentNode.removeChild(box);
+      }
+    }, 6000);
+  }
+
+  /** Re-fetch the teacher dashboard and re-render (keeps counts in sync). */
+  async refreshGroups() {
+    const data = await ApiClient.getTeacherData();
+    this.data = data;
+    if (this.activeTab === 'groups') this.render();
+  }
+
+  /**
+   * P1-J: create/edit modal fields. class_id options come exclusively from
+   * the authenticated teacher's classes (server re-verifies ownership).
+   */
+  groupModalFields(group = null) {
+    const classes = this.data.classes || [];
+    const parsed = group
+      ? parseGroupClassTime(group.class_time, group.shift)
+      : { hour: '05', minute: '00', period: 'evening' };
+    const selectedDays = group && Array.isArray(group.study_days)
+      ? group.study_days.map(String)
+      : [];
+
+    return [
+      {
+        name: 'name', label: 'اسم المجموعة', type: 'text', required: true,
+        maxlength: 150, value: group ? group.name : '',
+        placeholder: 'مثال: مجموعة الأحد والثلاثاء'
+      },
+      {
+        name: 'class_id', label: 'الصف الدراسي', type: 'select', required: true,
+        value: group ? group.class_id : (classes.length ? classes[0].id : ''),
+        options: classes.map(c => ({ value: c.id, label: c.name }))
+      },
+      {
+        name: 'study_days', label: 'أيام الدراسة', type: 'checklist',
+        options: STUDY_DAY_OPTIONS.map(day => ({
+          value: day.value,
+          label: day.label,
+          checked: selectedDays.includes(day.value)
+        })),
+        emptyText: 'لا توجد أيام متاحة'
+      },
+      {
+        name: 'hour', label: 'موعد الحصة — الساعة', type: 'select', required: true,
+        value: parsed.hour, options: GROUP_HOUR_OPTIONS
+      },
+      {
+        name: 'minute', label: 'موعد الحصة — الدقائق', type: 'select', required: true,
+        value: parsed.minute, options: GROUP_MINUTE_OPTIONS
+      },
+      {
+        name: 'period', label: 'الفترة', type: 'select', required: true,
+        value: parsed.period, options: GROUP_PERIOD_OPTIONS
+      },
+      {
+        name: 'price', label: 'سعر الدرس (ج.م)', type: 'number', required: true,
+        min: 0, step: '0.01', value: group ? Number(group.price) : ''
+      },
+      {
+        name: 'payment_scheme', label: 'نظام الدفع', type: 'select', required: true,
+        value: group ? group.payment_scheme : 'monthly', options: GROUP_PAYMENT_OPTIONS
+      }
+    ];
+  }
+
+  /** Collect + validate the group payload shared by create and edit modals. */
+  collectGroupPayload(values) {
+    const days = normalizeStudyDays(values.study_days);
+    if (days.length === 0) {
+      throw groupValidationError('يرجى اختيار يوم دراسة واحد على الأقل');
+    }
+    const classTime = buildGroupClassTime(values.hour, values.minute, values.period);
+    return {
+      class_id: Number(values.class_id),
+      name: String(values.name || '').trim(),
+      study_days: days,
+      class_time: classTime,
+      shift: values.period,
+      price: Number(values.price),
+      payment_scheme: values.payment_scheme
+    };
+  }
+
+  /** Add-group modal — class selector lists only this teacher's classes. */
+  openGroupModal() {
+    const classes = this.data.classes || [];
+    if (classes.length === 0) {
+      this.showGroupsMessage('يجب إضافة صف دراسي أولاً قبل إنشاء مجموعة.', true);
+      return;
+    }
+
+    AppModal.open({
+      title: 'إضافة مجموعة دراسية جديدة',
+      description: 'أدخل اسم المجموعة، اختر الصف الدراسي، أيام الدراسة، موعد الحصة، السعر ونظام الدفع.',
+      fields: this.groupModalFields(),
+      submitLabel: 'حفظ المجموعة',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الحفظ...',
+      onSubmit: async (values) => {
+        await ApiClient.createGroup(this.collectGroupPayload(values));
+        await this.refreshGroups();
+        this.showGroupsMessage('تم إضافة المجموعة الدراسية بنجاح');
+      }
+    });
+  }
+
+  /** Edit-group modal — prefilled with the stored group's values. */
+  openEditGroupModal(groupId) {
+    const group = (this.data.groups || []).find(g => Number(g.id) === groupId);
+    if (!group) {
+      this.showGroupsMessage('المجموعة غير موجودة', true);
+      return;
+    }
+
+    AppModal.open({
+      title: 'تعديل المجموعة الدراسية',
+      description: 'سيتم تحديث المجموعة داخل مساحة المدرس الحالية فقط (عزل المستأجرين مفروض من الخادم).',
+      fields: this.groupModalFields(group),
+      submitLabel: 'حفظ التعديلات',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الحفظ...',
+      onSubmit: async (values) => {
+        await ApiClient.updateGroup({ id: Number(group.id), ...this.collectGroupPayload(values) });
+        await this.refreshGroups();
+        this.showGroupsMessage('تم تحديث المجموعة الدراسية بنجاح');
+      }
+    });
+  }
+
+  /**
+   * Delete-group confirmation modal. On 409 the backend's safe Arabic
+   * dependency message is shown (via AppModal); 403/401/500 map to the
+   * standard safe messages. The server refuses deletion whenever the
+   * group still has enrollments, attendance, exams, homeworks or videos.
+   */
+  confirmDeleteGroup(groupId) {
+    const group = (this.data.groups || []).find(g => Number(g.id) === groupId);
+    AppModal.open({
+      title: 'تأكيد حذف المجموعة الدراسية',
+      description: group
+        ? `هل أنت متأكد من حذف هذه المجموعة؟ سيتم حذف "${group.name}" نهائيًا.`
+        : 'هل أنت متأكد من حذف هذه المجموعة؟',
+      fields: [],
+      submitLabel: 'حذف',
+      cancelLabel: 'إلغاء',
+      loadingLabel: 'جارٍ الحذف...',
+      onSubmit: async () => {
+        await ApiClient.deleteGroup(groupId);
+        await this.refreshGroups();
+        this.showGroupsMessage('تم حذف المجموعة بنجاح');
+      }
+    });
   }
 
   renderStudents() {
@@ -1840,6 +2191,30 @@ class TeacherController {
     });
     this.container.querySelectorAll('[data-action="delete-class"]').forEach(btn => {
       btn.addEventListener('click', () => this.confirmDeleteClass(Number(btn.dataset.id)));
+    });
+
+    // P1-J: Study Groups CRUD — add / edit / delete (real API data,
+    // no page reload; ownership enforced server-side).
+    this.container.querySelectorAll('[data-action="open-group-modal"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openGroupModal());
+    });
+    this.container.querySelectorAll('[data-action="edit-group"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openEditGroupModal(Number(btn.dataset.id)));
+    });
+    this.container.querySelectorAll('[data-action="delete-group"]').forEach(btn => {
+      btn.addEventListener('click', () => this.confirmDeleteGroup(Number(btn.dataset.id)));
+    });
+    // "إضافة صف دراسي" CTA shown on the groups tab when the teacher has no
+    // academic classes yet — navigates to the existing Academic Classes screen.
+    this.container.querySelectorAll('[data-action="goto-classes"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (window.router) {
+          window.router.navigate('/teacher/classes');
+        } else {
+          this.activeTab = 'classes';
+          this.render();
+        }
+      });
     });
   }
 }
