@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS `study_groups` (
   `name` VARCHAR(150) NOT NULL,
   `study_days` JSON NOT NULL,
   `class_time` VARCHAR(50) NOT NULL,
+  `end_time` VARCHAR(5) NULL DEFAULT NULL,
   `shift` ENUM('morning', 'evening') NOT NULL DEFAULT 'evening',
   `price` DECIMAL(10,2) NOT NULL,
   `payment_scheme` ENUM('monthly', 'per_session') NOT NULL DEFAULT 'monthly',

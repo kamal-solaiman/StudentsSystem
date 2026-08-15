@@ -154,7 +154,7 @@ function phpLiteral(value) {
 /** Base schema shared by every case. */
 const BASE_SCHEMA = `
 \\Keep::$pdo->exec("CREATE TABLE academic_classes (id SERIAL PRIMARY KEY, teacher_id INTEGER NOT NULL, name TEXT NOT NULL, level TEXT NOT NULL, grade TEXT NULL, description TEXT NULL, created_at TEXT)");
-\\Keep::$pdo->exec("CREATE TABLE study_groups (id SERIAL PRIMARY KEY, teacher_id INTEGER NOT NULL, class_id INTEGER NOT NULL, name TEXT NOT NULL, study_days TEXT NOT NULL, class_time TEXT NOT NULL, shift TEXT NOT NULL, price NUMERIC(10,2) NOT NULL, payment_scheme TEXT NOT NULL, created_at TEXT)");
+\\Keep::$pdo->exec("CREATE TABLE study_groups (id SERIAL PRIMARY KEY, teacher_id INTEGER NOT NULL, class_id INTEGER NOT NULL, name TEXT NOT NULL, study_days TEXT NOT NULL, class_time TEXT NOT NULL, end_time TEXT NULL, shift TEXT NOT NULL, price NUMERIC(10,2) NOT NULL, payment_scheme TEXT NOT NULL, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE student_enrollments (id SERIAL PRIMARY KEY, teacher_id INTEGER, student_id INTEGER, class_id INTEGER, group_id INTEGER, enrollment_date TEXT, status TEXT, payment_status TEXT, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE attendance_records (id SERIAL PRIMARY KEY, teacher_id INTEGER, student_id INTEGER, group_id INTEGER, date TEXT, status TEXT, present TEXT, absent TEXT, late TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE exams (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
@@ -313,7 +313,8 @@ const VALID_CREATE_PAYLOAD = {
   name: 'مجموعة الفيزياء الجديدة',
   class_id: 1,
   study_days: ['الثلاثاء', 'الأحد', 'الثلاثاء'], // duplicate + out-of-order: must normalize
-  class_time: '17:30',
+  start_time: '17:30',
+  end_time: '18:30',
   shift: 'evening',
   price: 350,
   payment_scheme: 'monthly'
@@ -401,7 +402,7 @@ const VALID_CREATE_PAYLOAD = {
   function groupsFromDb(ns) {
     const stmt = `echo 'VERIFY:' . json_encode(array_map(static function (array $row): array {
         return ['id' => $row['id'], 'teacher_id' => $row['teacher_id'], 'class_id' => $row['class_id'],
-                'name' => $row['name'], 'study_days' => $row['study_days'], 'class_time' => $row['class_time'],
+                'name' => $row['name'], 'study_days' => $row['study_days'], 'class_time' => $row['class_time'], 'end_time' => $row['end_time'],
                 'shift' => $row['shift'], 'price' => $row['price'], 'payment_scheme' => $row['payment_scheme']];
     }, \\Keep::$pdo->query('SELECT * FROM study_groups ORDER BY id ASC')->fetchAll(PDO::FETCH_ASSOC)));`;
     return verifyCase(ns, stmt).then(out => JSON.parse(out.slice(out.indexOf('VERIFY:') + 7)));
@@ -431,6 +432,7 @@ const VALID_CREATE_PAYLOAD = {
     // duplicate day dropped, canonical Arabic week order applied
     assert.deepEqual(JSON.parse(created.study_days), ['الأحد', 'الثلاثاء']);
     assert.equal(created.class_time, '17:30');
+    assert.equal(created.end_time, '18:30');
     assert.equal(created.shift, 'evening');
     assert.equal(created.price, '350.00');
     assert.equal(created.payment_scheme, 'monthly');
@@ -508,13 +510,46 @@ const VALID_CREATE_PAYLOAD = {
     }
   });
 
-  test('create_group rejects malformed or localized lesson times (400)', { skip }, async () => {
-    for (const classTime of ['25:00', '5:30', '05:60', '17:30:00', '05:00 مساءً', '', 1730]) {
+  test('create_group rejects malformed or localized lesson START times (400)', { skip }, async () => {
+    for (const startTime of ['25:00', '5:30', '05:60', '17:30:00', '05:00 مساءً', '', 1730]) {
       const { out } = await runEndpointCase({
-        input: { action: 'create_group', csrf_token: 'csrf-ok', payload: { ...VALID_CREATE_PAYLOAD, class_time: classTime } }
+        input: { action: 'create_group', csrf_token: 'csrf-ok', payload: { ...VALID_CREATE_PAYLOAD, start_time: startTime } }
       });
-      assert.equal(exitResult(out).status, 400, `class_time=${JSON.stringify(classTime)}`);
-      assert.equal(responseMessage(exitResult(out)), 'موعد الحصة غير صالح', `class_time=${JSON.stringify(classTime)}`);
+      assert.equal(exitResult(out).status, 400, `start_time=${JSON.stringify(startTime)}`);
+      assert.equal(responseMessage(exitResult(out)), 'موعد بداية الحصة غير صالح', `start_time=${JSON.stringify(startTime)}`);
+    }
+  });
+
+  test('create_group rejects malformed or missing lesson END times (400)', { skip }, async () => {
+    for (const endTime of ['25:00', '5:30', '05:60', '18:30:00', '06:30 مساءً', '', 1830, undefined]) {
+      const payload = { ...VALID_CREATE_PAYLOAD };
+      if (endTime === undefined) { delete payload.end_time; } else { payload.end_time = endTime; }
+      const { out } = await runEndpointCase({
+        input: { action: 'create_group', csrf_token: 'csrf-ok', payload }
+      });
+      assert.equal(exitResult(out).status, 400, `end_time=${JSON.stringify(endTime)}`);
+      assert.equal(responseMessage(exitResult(out)), 'موعد نهاية الحصة غير صالح', `end_time=${JSON.stringify(endTime)}`);
+    }
+  });
+
+  test('create_group rejects an inverted or zero-length time range (400)', { skip }, async () => {
+    for (const range of [{ start_time: '10:00', end_time: '10:00' }, { start_time: '11:00', end_time: '10:30' }]) {
+      const { out } = await runEndpointCase({
+        input: { action: 'create_group', csrf_token: 'csrf-ok', payload: { ...VALID_CREATE_PAYLOAD, ...range } }
+      });
+      assert.equal(exitResult(out).status, 400, JSON.stringify(range));
+      assert.equal(responseMessage(exitResult(out)), 'وقت نهاية الحصة يجب أن يكون بعد وقت بدايتها', JSON.stringify(range));
+    }
+  });
+
+  test('create_group accepts valid ranges (09:00→10:30, 17:30→18:30)', { skip }, async () => {
+    for (const range of [{ start_time: '09:00', end_time: '10:30' }, { start_time: '17:30', end_time: '18:30' }]) {
+      const { out } = await runEndpointCase({
+        input: { action: 'create_group', csrf_token: 'csrf-ok', payload: { ...VALID_CREATE_PAYLOAD, ...range } }
+      });
+      const result = exitResult(out);
+      assert.equal(result.status, 200, JSON.stringify(range));
+      assert.equal(result.data.success, true, JSON.stringify(range));
     }
   });
 
@@ -593,8 +628,8 @@ const VALID_CREATE_PAYLOAD = {
         action: 'update_group', csrf_token: 'csrf-ok',
         payload: {
           id: 1, name: 'مجموعة محدثة', class_id: 1,
-          study_days: ['الخميس', 'السبت', 'السبت'], class_time: '09:00',
-          shift: 'morning', price: 250, payment_scheme: 'monthly'
+          study_days: ['الخميس', 'السبت', 'السبت'], start_time: '09:00',
+          end_time: '10:30', shift: 'morning', price: 250, payment_scheme: 'monthly'
         }
       }
     });
@@ -610,6 +645,7 @@ const VALID_CREATE_PAYLOAD = {
     assert.equal(String(updated.teacher_id), '1');
     assert.deepEqual(JSON.parse(updated.study_days), ['السبت', 'الخميس']);
     assert.equal(updated.class_time, '09:00');
+    assert.equal(updated.end_time, '10:30');
     assert.equal(updated.shift, 'morning');
     assert.equal(updated.price, '250.00');
     // other tenants / groups untouched
@@ -731,6 +767,7 @@ const VALID_CREATE_PAYLOAD = {
     assert.equal(group1.class_name, 'الصف الثالث الثانوي');
     assert.deepEqual(group1.study_days, ['الأحد', 'الثلاثاء']);
     assert.equal(group1.class_time, '05:00 مساءً'); // legacy row passes through
+    assert.equal(group1.end_time, null); // legacy rows have no stored end time
     assert.equal(group1.shift, 'evening');
     assert.equal(group1.price, 350);
     assert.equal(group1.payment_scheme, 'monthly');

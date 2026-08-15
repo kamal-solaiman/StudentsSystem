@@ -8,9 +8,9 @@
  *    .btn-secondary (assets/css/style.css)
  *
  * Supports: title, description, dynamic fields (text / number / date /
- * select / textarea / checklist), client-side validation, inline errors,
- * loading state, double-submit prevention, safe close (button / backdrop /
- * Escape) and RTL Arabic UI.
+ * select / textarea / checklist / timerow), client-side validation, inline
+ * errors, loading state, double-submit prevention, safe close (button /
+ * backdrop / Escape) and RTL Arabic UI.
  *
  * XSS-safe: every label and value is inserted through textContent / DOM APIs,
  * never through innerHTML interpolation.
@@ -24,9 +24,13 @@ class AppModal {
    * @param {string}   options.title
    * @param {string}   [options.description]
    * @param {Array}    [options.fields] field specs:
-   *   { name, label, type: 'text'|'number'|'date'|'select'|'textarea'|'checklist',
+   *   { name, label, type: 'text'|'number'|'date'|'select'|'textarea'|'checklist'|'timerow',
    *     required, min, max, value, placeholder, rows,
    *     options: [{value,label,checked}] | (values => options), emptyText }
+   *   'timerow' (P1-J-FIX): one INLINE row of three selects (hour : minute period)
+   *   — spec: { hourOptions, minuteOptions, periodOptions,
+   *             value: { hour, minute, period } };
+   *   collected as the object { hour, minute, period }.
    * @param {Object}   [options.preview] { label, render(values) }
    * @param {string}   [options.submitLabel]
    * @param {string}   [options.cancelLabel]
@@ -173,10 +177,14 @@ class AppModal {
     group.className = 'form-group';
     group.style.marginBottom = '1rem';
 
-    const label = document.createElement('label');
-    label.className = 'form-label';
-    label.textContent = (spec.label || spec.name) + (spec.required ? ' *' : '');
-    group.appendChild(label);
+    // P1-J-FIX: an explicit empty label suppresses the block label entirely
+    // (used by the second من/إلى time row, which carries its own inline label).
+    if (spec.label !== '') {
+      const label = document.createElement('label');
+      label.className = 'form-label';
+      label.textContent = (spec.label || spec.name) + (spec.required ? ' *' : '');
+      group.appendChild(label);
+    }
 
     let control;
 
@@ -193,6 +201,44 @@ class AppModal {
       if (spec.placeholder) control.placeholder = spec.placeholder;
       if (spec.value != null) control.value = String(spec.value);
       if (spec.maxlength) control.maxLength = Number(spec.maxlength);
+    } else if (spec.type === 'timerow') {
+      // P1-J-FIX: hour/minute/period selects INLINE on one row (hour beside
+      // minute, never stacked). RTL flows the controls naturally after the
+      // من/إلى label; the values stay canonical Latin digits.
+      control = document.createElement('div');
+      control.style.cssText = 'display:flex;align-items:center;gap:0.5rem;';
+      const value = spec.value || {};
+
+      // Inline row prefix (e.g. "من:" / "إلى:") — keeps the whole row on one
+      // line: label, hour, ':', minute, period.
+      if (spec.inlineLabel) {
+        const rowLabel = document.createElement('span');
+        rowLabel.style.cssText = 'font-weight:800;color:#0f172a;min-width:2.5rem;';
+        rowLabel.textContent = spec.inlineLabel;
+        control.appendChild(rowLabel);
+      }
+
+      const hourSelect = document.createElement('select');
+      hourSelect.className = 'form-control';
+      hourSelect.style.cssText = 'width:auto;min-width:4.5rem;';
+      this._setSelectOptions(hourSelect, spec.hourOptions || [], value.hour);
+
+      const separator = document.createElement('span');
+      separator.style.cssText = 'font-weight:800;color:#0f172a;';
+      separator.textContent = ':';
+
+      const minuteSelect = document.createElement('select');
+      minuteSelect.className = 'form-control';
+      minuteSelect.style.cssText = 'width:auto;min-width:4.5rem;';
+      this._setSelectOptions(minuteSelect, spec.minuteOptions || [], value.minute);
+
+      const periodSelect = document.createElement('select');
+      periodSelect.className = 'form-control';
+      periodSelect.style.cssText = 'width:auto;min-width:5.5rem;';
+      this._setSelectOptions(periodSelect, spec.periodOptions || [], value.period);
+
+      control.append(hourSelect, separator, minuteSelect, periodSelect);
+      control._timeParts = { hour: hourSelect, minute: minuteSelect, period: periodSelect };
     } else if (spec.type === 'checklist') {
       control = document.createElement('div');
       control.style.cssText = 'max-height:180px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:0.5rem;padding:0.75rem;background:#f8fafc;';
@@ -288,6 +334,12 @@ class AppModal {
         values[spec.name] = Array.from(
           control.querySelectorAll('input[type="checkbox"]:checked')
         ).map(cb => cb.value);
+      } else if (spec.type === 'timerow') {
+        values[spec.name] = {
+          hour: control._timeParts.hour.value,
+          minute: control._timeParts.minute.value,
+          period: control._timeParts.period.value
+        };
       } else {
         values[spec.name] = control.value;
       }
@@ -300,6 +352,9 @@ class AppModal {
     for (const { spec } of this.fields) {
       if (spec.type === 'checklist') {
         continue; // selection is optional unless backend rejects it
+      }
+      if (spec.type === 'timerow') {
+        continue; // selects always hold a valid option; range is checked by the caller
       }
       const text = String(values[spec.name] ?? '').trim();
       if (spec.required && text === '') {
