@@ -143,10 +143,11 @@ const BASE_SCHEMA = `
 \\Keep::$pdo->exec("CREATE TABLE homeworks (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER, title TEXT NULL, description TEXT NULL, due_date TEXT NULL, max_grade NUMERIC(6,2) NULL, created_at TEXT NULL)");
 \\Keep::$pdo->exec("CREATE TABLE student_homework_submissions (id SERIAL PRIMARY KEY, homework_id INTEGER, student_id INTEGER, teacher_id INTEGER, status TEXT, grade NUMERIC(6,2) NULL, feedback TEXT NULL, submitted_at TEXT NULL)");
 \\Keep::$pdo->exec("CREATE TABLE lesson_videos (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
-\\Keep::$pdo->exec("CREATE TABLE teachers (id SERIAL PRIMARY KEY, user_id INTEGER, name TEXT, center_name TEXT, phone TEXT, address TEXT, logo TEXT, subject TEXT, price_per_student NUMERIC(10,2), created_at TEXT)");
+\\Keep::$pdo->exec("CREATE TABLE subjects (id SERIAL PRIMARY KEY, name TEXT, normalized_name TEXT UNIQUE, status TEXT)");
+\\Keep::$pdo->exec("CREATE TABLE teachers (id SERIAL PRIMARY KEY, user_id INTEGER, name TEXT, center_name TEXT, phone TEXT, address TEXT, logo TEXT, subject TEXT, subject_id INTEGER NULL, bio TEXT NULL, price_per_student NUMERIC(10,2), created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE students (id SERIAL PRIMARY KEY, user_id INTEGER, student_code TEXT UNIQUE, name TEXT, gender TEXT NULL, date_of_birth TEXT NULL, phone TEXT, parent_phone TEXT, parent_user_id INTEGER NULL, address TEXT NULL, notes TEXT NULL, grade_level TEXT, qr_code_token TEXT, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE teacher_staff (id SERIAL PRIMARY KEY, teacher_id INTEGER, user_id INTEGER, role_title TEXT, permissions TEXT, created_at TEXT)");
-\\Keep::$pdo->exec("CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE, phone TEXT, password_hash TEXT NULL, role TEXT NULL, avatar TEXT NULL, created_at TEXT)");
+\\Keep::$pdo->exec("CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, username TEXT UNIQUE, email TEXT UNIQUE, phone TEXT, password_hash TEXT NULL, role TEXT NULL, avatar TEXT NULL, created_at TEXT)");
 `;
 
 const BUMP_SEQUENCES = `
@@ -167,7 +168,8 @@ const BUMP_SEQUENCES = `
  */
 function seedStudentsWorld(today) {
   return `
-\\Keep::$pdo->exec("INSERT INTO teachers (id, user_id, name, center_name, phone, address, subject, price_per_student) VALUES (1, 2, 'أ. أحمد محمود', 'سنتر النخبة', '01011111111', 'الدقي', 'الفيزياء', 45.00), (2, 3, 'أ. سارة عادل', 'أكاديمية التفوق', '01022222222', 'المعادي', 'الرياضيات', 50.00)");
+\\Keep::$pdo->exec("INSERT INTO subjects (id, name, normalized_name, status) VALUES (1, 'رياضيات', 'رياضيات', 'active'), (4, 'الفيزياء', 'الفيزياء', 'active'), (5, 'الكيمياء', 'الكيمياء', 'inactive')");
+\\Keep::$pdo->exec("INSERT INTO teachers (id, user_id, name, center_name, phone, address, subject, subject_id, price_per_student) VALUES (1, 2, 'أ. أحمد محمود', 'سنتر النخبة', '01011111111', 'الدقي', 'الفيزياء', 4, 45.00), (2, 3, 'أ. سارة عادل', 'أكاديمية التفوق', '01022222222', 'المعادي', 'الرياضيات', 1, 50.00)");
 \\Keep::$pdo->exec("INSERT INTO academic_classes (id, teacher_id, name, level, grade) VALUES (1, 1, 'الصف الثالث الثانوي', 'secondary', 'third'), (2, 1, 'الصف الأول الإعدادي', 'preparatory', 'first'), (4, 2, 'الصف الثالث الثانوي', 'secondary', 'third'), (5, 2, 'الصف الأول الإعدادي', 'preparatory', 'first')");
 \\Keep::$pdo->exec("INSERT INTO study_groups (id, teacher_id, class_id, name, study_days, class_time, shift, price, payment_scheme) VALUES (1, 1, 1, 'مجموعة الأحد والثلاثاء', '[\\"الأحد\\", \\"الثلاثاء\\"]', '05:00 مساءً', 'evening', 350.00, 'monthly'), (2, 1, 1, 'مجموعة السبت', '[\\"السبت\\"]', '10:00 صباحاً', 'morning', 300.00, 'monthly'), (3, 1, 2, 'مجموعة الإعدادي', '[\\"الإثنين\\"]', '04:00 مساءً', 'evening', 200.00, 'monthly'), (4, 2, 4, 'مجموعة التفوق', '[\\"الأحد\\", \\"الأربعاء\\"]', '07:00 مساءً', 'evening', 400.00, 'monthly')");
 \\Keep::$pdo->exec("INSERT INTO users (id, name, email, phone, password_hash, role) VALUES (4, 'أ. خالد سامح', 'khaled@staff.edu', '01033333333', 'STAFF-HASH', 'staff'), (6, 'يوسف محمد سعيد', 'youssef@student.edu', '01044444441', 'ORIGINAL-HASH-1', 'student'), (7, 'منة الله حسن', 'menna@student.edu', '01044444442', 'ORIGINAL-HASH-2', 'student'), (8, 'كريم عادل', 'karim@student.edu', '01044444443', 'ORIGINAL-HASH-3', 'student'), (9, 'ندى سمير', 'nada@student.edu', '01044444444', 'ORIGINAL-HASH-4', 'student'), (10, 'ولي أمر منة', 'parent-menna@home.edu', '01099999992', 'PARENT-HASH', 'parent')");
@@ -636,7 +638,7 @@ const SESSION_STAFF_1 = {
     });
     const result = exitResult(out);
     assert.equal(result.data.username, 'login.student@example.com');
-    assert.equal(result.data.default_password, '00000000');
+    assert.equal(result.data.default_password, undefined, 'API must not expose the default password');
 
     const [user] = await queryDb(ns, "SELECT * FROM users WHERE email = 'login.student@example.com'");
     assert.ok(user, 'user account missing');

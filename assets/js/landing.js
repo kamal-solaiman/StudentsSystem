@@ -119,29 +119,17 @@ class LandingController {
       });
     });
 
-    // Registration buttons - no backend registration exists yet,
-    // so we just route to login form for now and surface a "soon" notice.
+    // Public registration has its own direct/refresh-safe SPA route.
     const registerBtns = document.querySelectorAll('[data-landing-action="register"]');
     registerBtns.forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.preventDefault();
         if (window.router) {
-          await window.router.navigate('/login');
-        } else {
-          this.hide();
-          if (window.app && typeof window.app.showLoginForm === 'function') {
-            window.app.showLoginForm();
-          }
+          await window.router.navigate('/register');
+        } else if (window.app && typeof window.app.showRegistration === 'function') {
+          await window.app.showRegistration();
         }
         window.scrollTo({ top: 0, behavior: 'smooth' });
-        // Surface a notice that registration UI is not yet available
-        setTimeout(() => {
-          const errorDiv = document.getElementById('login-error');
-          if (errorDiv) {
-            errorDiv.textContent = 'التسجيل الجديد غير متاح حالياً. يرجى التواصل مع إدارة المنصة أو استخدام حساب موجود.';
-            errorDiv.style.display = 'block';
-          }
-        }, 50);
       });
     });
   }

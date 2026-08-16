@@ -160,7 +160,8 @@ const BASE_SCHEMA = `
 \\Keep::$pdo->exec("CREATE TABLE exams (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
 \\Keep::$pdo->exec("CREATE TABLE homeworks (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
 \\Keep::$pdo->exec("CREATE TABLE lesson_videos (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
-\\Keep::$pdo->exec("CREATE TABLE teachers (id SERIAL PRIMARY KEY, user_id INTEGER, name TEXT, center_name TEXT, phone TEXT, address TEXT, logo TEXT, subject TEXT, price_per_student NUMERIC(10,2), created_at TEXT)");
+\\Keep::$pdo->exec("CREATE TABLE subjects (id SERIAL PRIMARY KEY, name TEXT, normalized_name TEXT UNIQUE, status TEXT)");
+\\Keep::$pdo->exec("CREATE TABLE teachers (id SERIAL PRIMARY KEY, user_id INTEGER, name TEXT, center_name TEXT, phone TEXT, address TEXT, logo TEXT, subject TEXT, subject_id INTEGER NULL, bio TEXT NULL, price_per_student NUMERIC(10,2), created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE students (id SERIAL PRIMARY KEY, user_id INTEGER, student_code TEXT, name TEXT, phone TEXT, parent_phone TEXT, parent_user_id INTEGER, grade_level TEXT, qr_code_token TEXT, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE teacher_staff (id SERIAL PRIMARY KEY, teacher_id INTEGER, user_id INTEGER, role_title TEXT, permissions TEXT, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, email TEXT, phone TEXT)");
@@ -178,7 +179,8 @@ const BUMP_SEQUENCE = `
 /** Seed two tenants (classes + groups) and a dependency set for group 1. */
 function seedTwoTenants(today) {
   return `
-\\Keep::$pdo->exec("INSERT INTO teachers (id, user_id, name, center_name, phone, address, subject, price_per_student) VALUES (1, 2, 'أ. أحمد محمود', 'سنتر النخبة', '01011111111', 'الدقي', 'الفيزياء', 45.00), (2, 3, 'أ. سارة عادل', 'أكاديمية التفوق', '01022222222', 'المعادي', 'الرياضيات', 50.00)");
+\\Keep::$pdo->exec("INSERT INTO subjects (id, name, normalized_name, status) VALUES (1, 'رياضيات', 'رياضيات', 'active'), (4, 'الفيزياء', 'الفيزياء', 'active'), (5, 'الكيمياء', 'الكيمياء', 'inactive')");
+\\Keep::$pdo->exec("INSERT INTO teachers (id, user_id, name, center_name, phone, address, subject, subject_id, price_per_student) VALUES (1, 2, 'أ. أحمد محمود', 'سنتر النخبة', '01011111111', 'الدقي', 'الفيزياء', 4, 45.00), (2, 3, 'أ. سارة عادل', 'أكاديمية التفوق', '01022222222', 'المعادي', 'الرياضيات', 1, 50.00)");
 \\Keep::$pdo->exec("INSERT INTO academic_classes (id, teacher_id, name, level, grade) VALUES (1, 1, 'الصف الثالث الثانوي', 'secondary', 'third'), (4, 2, 'الصف الثالث الثانوي', 'secondary', 'third')");
 \\Keep::$pdo->exec("INSERT INTO study_groups (id, teacher_id, class_id, name, study_days, class_time, shift, price, payment_scheme) VALUES (1, 1, 1, 'مجموعة الأحد والثلاثاء', '[\\"الأحد\\", \\"الثلاثاء\\"]', '05:00 مساءً', 'evening', 350.00, 'monthly'), (2, 1, 1, 'مجموعة السبت', '[\\"السبت\\"]', '10:00 صباحاً', 'morning', 300.00, 'monthly'), (4, 2, 4, 'مجموعة التفوق', '[\\"الأحد\\", \\"الأربعاء\\"]', '07:00 مساءً', 'evening', 400.00, 'monthly')");
 \\Keep::$pdo->exec("INSERT INTO student_enrollments (id, teacher_id, student_id, class_id, group_id, enrollment_date, status, payment_status) VALUES (1, 1, 1, 1, 1, '2026-01-15', 'active', 'paid')");
@@ -820,6 +822,30 @@ const VALID_CREATE_PAYLOAD = {
     });
     assert.equal(exitResult(out).status, 200);
     assert.equal(exitResult(out).data.success, true);
+  });
+
+  test('teacher settings keeps subject_id authoritative and synchronizes legacy subject text', { skip }, async () => {
+    const { ns, out } = await runEndpointCase({
+      input: {
+        action: 'update_teacher_settings', csrf_token: 'csrf-ok',
+        payload: {
+          name: 'أ. أحمد محمود', center_name: 'سنتر النخبة', phone: '01011111111', address: 'الدقي',
+          subject_id: 1, subject: 'نص مزور', price_per_student: 45
+        }
+      }
+    });
+    assert.equal(exitResult(out).status, 200);
+    const verified = await verifyCase(ns, "echo 'VERIFY:' . json_encode(\\Keep::$pdo->query('SELECT subject_id, subject FROM teachers WHERE id = 1')->fetch(PDO::FETCH_ASSOC), JSON_UNESCAPED_UNICODE);");
+    const row = JSON.parse(verified.slice(verified.indexOf('VERIFY:') + 7));
+    assert.deepEqual(row, { subject_id: 1, subject: 'رياضيات' });
+
+    const inactive = await runEndpointCase({
+      input: {
+        action: 'update_teacher_settings', csrf_token: 'csrf-ok',
+        payload: { name: 'أحمد', center_name: 'سنتر', phone: '01011111111', address: '', subject_id: 5, price_per_student: 45 }
+      }
+    });
+    assert.equal(exitResult(inactive.out).status, 422);
   });
 
   test('super_admin cannot use the teacher dashboard endpoints', { skip }, async () => {

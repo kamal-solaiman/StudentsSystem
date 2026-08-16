@@ -156,6 +156,14 @@ class ApiClient {
     return data;
   }
 
+  static async getRegistrationOptions() {
+    return this.request('register.php', 'GET');
+  }
+
+  static async register(payload) {
+    return this.request('register.php', 'POST', payload);
+  }
+
   static async login(email, password) {
     const payload = { email, password };
     const response = await this.request('login.php', 'POST', payload);
@@ -177,6 +185,10 @@ class ApiClient {
     // For authenticated users, don't pass teacher_id - use session context
     const url = teacherId ? `teacher.php?teacher_id=${teacherId}` : 'teacher.php';
     return this.request(url, 'GET');
+  }
+
+  static async updateTeacherSettings(data) {
+    return this.request('teacher.php', 'POST', { action: 'update_teacher_settings', payload: data });
   }
 
   /* ------------------------------------------------------------------ */
@@ -341,6 +353,13 @@ class ApiClient {
 
   static async createQuestion(data) {
     return this.request('exams.php', 'POST', data);
+  }
+
+  static async updateTeacherApproval(teacherId, action) {
+    return this.request('super_admin.php', 'POST', {
+      action,
+      teacher_id: Number(teacherId)
+    });
   }
 
   static async updateSaasSettings(data) {

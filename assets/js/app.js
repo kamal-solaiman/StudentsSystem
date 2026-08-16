@@ -57,8 +57,8 @@ class AppController {
         return '/login';
       }
 
-      // 2. Authenticated user visiting /login -> redirect to their role dashboard
-      if (this.isAuthenticated && to.path === '/login') {
+      // 2. Authenticated users do not create another public account in the same session.
+      if (this.isAuthenticated && ['/login', '/register'].includes(to.path)) {
         return this.getDashboardRouteForRole(this._resolveRole());
       }
 
@@ -92,6 +92,11 @@ class AppController {
       this.controllerInstance = null;
       this.setLogoutButtonVisibility(false);
       this.showLoginForm();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, { public: true });
+
+    this.router.addRoute('/register', async () => {
+      await this.showRegistration();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }, { public: true });
 
@@ -533,6 +538,13 @@ class AppController {
     }
   }
 
+  async showRegistration() {
+    if (this.landing) this.landing.hide();
+    this.setLogoutButtonVisibility(false);
+    this.controllerInstance = new RegistrationController(this.mainContainer, this.router);
+    await this.controllerInstance.init();
+  }
+
   showLoginForm() {
     if (this.landing) {
       this.landing.hide();
@@ -547,8 +559,8 @@ class AppController {
         <h2 style="text-align: center; font-weight: 800; color: #0f172a; margin-bottom: 1.5rem;">تسجيل الدخول</h2>
         
         <div style="margin-bottom: 1.5rem;">
-          <label style="display: block; font-size: 0.85rem; font-weight: 700; color: #0f172a; margin-bottom: 0.5rem;">البريد الإلكتروني</label>
-          <input type="email" id="login-email" placeholder="ادخل البريد الإلكتروني" style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.9rem;" required>
+          <label style="display: block; font-size: 0.85rem; font-weight: 700; color: #0f172a; margin-bottom: 0.5rem;">البريد الإلكتروني أو اسم المستخدم</label>
+          <input type="text" id="login-email" autocomplete="username" placeholder="أدخل البريد الإلكتروني أو اسم المستخدم" style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.9rem;" required>
         </div>
         
         <div style="margin-bottom: 1.5rem;">
@@ -560,6 +572,9 @@ class AppController {
           تسجيل الدخول
         </button>
         
+        <button type="button" id="go-to-register-btn" style="width: 100%; padding: 0.65rem; margin-bottom: .65rem; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; cursor: pointer;">
+          إنشاء حساب جديد
+        </button>
         <button type="button" id="back-to-landing-btn" style="width: 100%; padding: 0.65rem; background: #f1f5f9; color: #0f172a; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.85rem; font-weight: 700; cursor: pointer;">
           العودة إلى الصفحة الرئيسية
         </button>
@@ -582,6 +597,11 @@ class AppController {
           await this.handleLogin();
         }
       });
+    }
+
+    const registerBtn = document.getElementById('go-to-register-btn');
+    if (registerBtn) {
+      registerBtn.addEventListener('click', () => this.router?.navigate('/register'));
     }
 
     const backBtn = document.getElementById('back-to-landing-btn');

@@ -29,19 +29,24 @@ try {
     // GET: Retrieve all teachers with their active student counts & SaaS monthly subscription fees
     if ($method === 'GET') {
         $stmtTeachers = $db->query('
-            SELECT 
+            SELECT
                 t.id,
                 t.name,
                 t.center_name,
                 t.phone,
                 t.address,
-                t.subject,
+                COALESCE(su.name, t.subject) AS subject,
                 t.price_per_student,
+                u.email,
+                u.account_status,
                 COUNT(DISTINCT CASE WHEN se.status = "active" THEN se.student_id END) AS active_students
             FROM teachers t
+            JOIN users u ON u.id = t.user_id AND u.role = \'teacher\'
+            LEFT JOIN subjects su ON su.id = t.subject_id
             LEFT JOIN student_enrollments se ON t.id = se.teacher_id
-            GROUP BY t.id
-            ORDER BY t.id ASC
+            GROUP BY t.id, t.name, t.center_name, t.phone, t.address, t.subject,
+                     t.price_per_student, u.email, u.account_status, su.name
+            ORDER BY FIELD(u.account_status, \'pending\', \'active\', \'rejected\'), t.id ASC
         ');
         $teachersRaw = $stmtTeachers->fetchAll();
 
@@ -61,6 +66,8 @@ try {
                 'phone' => (string)$row['phone'],
                 'address' => (string)$row['address'],
                 'subject' => (string)$row['subject'],
+                'email' => (string)$row['email'],
+                'account_status' => (string)$row['account_status'],
                 'price_per_student' => $price,
                 'active_students' => $activeStudents,
                 'subscription_monthly' => $monthlySub
@@ -97,6 +104,27 @@ try {
         $input = Helper::getJsonInput();
         $action = Helper::sanitizeString($input['action'] ?? '');
 
+        if (in_array($action, ['approve_teacher', 'reject_teacher'], true)) {
+            $teacherId = filter_var($input['teacher_id'] ?? null, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1]
+            ]);
+            if ($teacherId === false) {
+                Helper::sendJson(['success' => false, 'message' => 'حساب المدرس غير صالح'], 422);
+            }
+
+            $newStatus = $action === 'approve_teacher' ? 'active' : 'rejected';
+            $stmtStatus = $db->prepare("\n                UPDATE users u\n                JOIN teachers t ON t.user_id = u.id\n                SET u.account_status = :status\n                WHERE t.id = :teacher_id\n                  AND u.role = 'teacher'\n                  AND u.account_status IN ('pending', 'rejected')\n            ");
+            $stmtStatus->execute(['status' => $newStatus, 'teacher_id' => $teacherId]);
+            if ($stmtStatus->rowCount() !== 1) {
+                Helper::sendJson(['success' => false, 'message' => 'لم يتم العثور على طلب مدرس قابل للتحديث'], 404);
+            }
+
+            Helper::sendJson([
+                'success' => true,
+                'message' => $newStatus === 'active' ? 'تمت الموافقة على حساب المدرس' : 'تم رفض حساب المدرس'
+            ]);
+        }
+
         if ($action === 'update_saas_settings') {
             $platformName = Helper::sanitizeString($input['platform_name'] ?? 'منصة إدارة تعليم موحدة');
             $defaultPrice = (float)($input['default_price_per_student'] ?? 50.0);
@@ -120,8 +148,9 @@ try {
     Helper::sendJson(['success' => false, 'error' => 'طريقة الطلب غير مسموح بها'], 405);
 
 } catch (Throwable $exception) {
+    error_log('super_admin.php failure: ' . get_class($exception));
     Helper::sendJson([
         'success' => false,
-        'error' => 'خطأ في سيرفر الإدارة الشاملة: ' . $exception->getMessage()
+        'message' => 'حدث خطأ غير متوقع في لوحة الإدارة'
     ], 500);
 }

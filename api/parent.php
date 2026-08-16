@@ -59,13 +59,12 @@ try {
             SELECT COUNT(*) as c
             FROM students s
             JOIN student_enrollments se ON s.id = se.student_id
-            WHERE (s.parent_user_id = :puid OR s.parent_phone = :pphone)
+            WHERE s.parent_user_id = :puid
             AND se.teacher_id = :tid
             LIMIT 1
         ');
         $stmtVerify->execute([
             'puid' => $parentUserId,
-            'pphone' => $parent['phone'],
             'tid' => $teacherId
         ]);
         
@@ -86,12 +85,11 @@ try {
     // Children belonging to this parent
     $stmtChildren = $db->prepare('
         SELECT * FROM students 
-        WHERE parent_user_id = :puid OR parent_phone = :pphone 
+        WHERE parent_user_id = :puid
         ORDER BY id ASC
     ');
     $stmtChildren->execute([
-        'puid' => $parentUserId,
-        'pphone' => (string)$parent['phone']
+        'puid' => $parentUserId
     ]);
     $children = $stmtChildren->fetchAll();
 
@@ -185,10 +183,11 @@ try {
 
     // Enrolled Teachers for this Child
     $stmtTeachers = $db->prepare('
-        SELECT se.*, t.name AS teacher_name, t.center_name, t.subject, t.phone,
+        SELECT se.*, t.name AS teacher_name, t.center_name, COALESCE(su.name, t.subject) AS subject, t.phone,
                sg.name AS group_name, sg.price, sg.payment_scheme 
         FROM student_enrollments se 
-        JOIN teachers t ON se.teacher_id = t.id 
+        JOIN teachers t ON se.teacher_id = t.id
+        LEFT JOIN subjects su ON su.id = t.subject_id
         JOIN study_groups sg ON se.group_id = sg.id 
         WHERE se.student_id = :sid
         ORDER BY t.id ASC

@@ -1224,10 +1224,7 @@ class TeacherController {
         this.studentSearch = null;
         await this.refreshStudents();
         const username = response && response.username ? ` — اسم المستخدم: ${response.username}` : '';
-        const password = response && response.default_password
-          ? ` وكلمة المرور الافتراضية: ${response.default_password}`
-          : '';
-        this.showStudentsMessage(`تم إنشاء حساب الطالب وربطه بالمجموعة بنجاح${username}${password}`);
+        this.showStudentsMessage(`تم إنشاء حساب الطالب وربطه بالمجموعة بنجاح${username}`);
       }
     });
   }
@@ -2837,6 +2834,10 @@ class TeacherController {
 
   renderSettings() {
     const t = this.data.teacher || {};
+    const subjects = Array.isArray(this.data.subjects) ? this.data.subjects : [];
+    const subjectOptions = subjects.map(subject => `
+      <option value="${Number(subject.id)}" ${Number(t.subject_id) === Number(subject.id) ? 'selected' : ''}>${escapeStudentText(subject.name)}</option>
+    `).join('');
     return `
       <div class="card-table-wrapper" style="margin-top: 1.5rem; padding: 2rem;">
         <h3 style="font-weight: 800; font-size: 1.25rem;">إعدادات المدرس والسنتر (Teacher Settings)</h3>
@@ -2859,7 +2860,14 @@ class TeacherController {
             <label class="form-label">العنوان التفصيلي</label>
             <input type="text" value="${t.address || ''}" class="form-control" id="set-address">
           </div>
+          <div class="form-group">
+            <label class="form-label">المادة الدراسية</label>
+            <select class="form-control" id="set-subject-id" required>
+              ${subjectOptions || '<option value="">لا توجد مواد نشطة متاحة</option>'}
+            </select>
+          </div>
         </div>
+        <p id="teacher-settings-message" aria-live="polite" style="margin-top:.75rem;font-size:.82rem;"></p>
 
         <div style="margin-top: 1rem;">
           <button class="btn btn-primary" id="btn-save-settings">حفظ التعديلات</button>
@@ -3566,5 +3574,34 @@ class TeacherController {
         }
       });
     });
+
+    const saveSettings = document.getElementById('btn-save-settings');
+    if (saveSettings) {
+      saveSettings.addEventListener('click', async () => {
+        const message = document.getElementById('teacher-settings-message');
+        saveSettings.disabled = true;
+        try {
+          await ApiClient.updateTeacherSettings({
+            name: document.getElementById('set-teacher-name')?.value || '',
+            center_name: document.getElementById('set-center-name')?.value || '',
+            phone: document.getElementById('set-phone')?.value || '',
+            address: document.getElementById('set-address')?.value || '',
+            subject_id: Number(document.getElementById('set-subject-id')?.value || 0),
+            price_per_student: Number((this.data.teacher || {}).price_per_student || 50)
+          });
+          if (message) {
+            message.style.color = '#047857';
+            message.textContent = 'تم حفظ إعدادات المدرس بنجاح';
+          }
+          if (this.onRefresh) await this.onRefresh();
+        } catch (error) {
+          if (message) {
+            message.style.color = '#be123c';
+            message.textContent = error.message || 'تعذر حفظ إعدادات المدرس';
+          }
+          saveSettings.disabled = false;
+        }
+      });
+    }
   }
 }
