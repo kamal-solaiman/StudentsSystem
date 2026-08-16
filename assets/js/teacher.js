@@ -369,6 +369,9 @@ class TeacherController {
     // class-scoped query — the browser never receives a platform-wide dump.
     this.studentsMessage = null;
     this.studentSearch = null;
+    // P1-K-FIX: the open student QR card modal (so a rapid double-click never
+    // stacks multiple backdrops). null when no card is open.
+    this._studentQrCard = null;
 
     // P1-G: dynamic QR broadcast screen state. The token is signed server-side;
     // the frontend only displays it, counts down, and auto-refreshes. No HMAC,
@@ -1258,6 +1261,142 @@ class TeacherController {
     });
   }
 
+  /**
+   * P1-K-FIX: "عرض كارنيه QR" — open a printable Student ID card.
+   *
+   * End-to-end path: click → this handler → look up the student BY ID from
+   * `this.data.students` (the ALREADY server-scoped list of THIS teacher's
+   * active enrollments) → render a card (name / code / class / group) with a
+   * real, scannable QR encoding the `student_code` → visible modal.
+   *
+   * SECURITY:
+   *  - No teacher_id is ever read from the DOM or sent anywhere; the student
+   *    record is resolved from the already-loaded tenant-scoped list, so a
+   *    forged `data-id` simply falls back to a clear Arabic error.
+   *  - The QR encodes ONLY the student_code (the same public business id the
+   *    Method-2 scanner attendance reads from the card). No secrets, tokens,
+   *    emails or cross-tenant data are embedded.
+   *  - The card is built with textContent (XSS-safe) like AppModal.
+   */
+  openStudentQrCard(studentId) {
+    const student = (this.data.students || [])
+      .find(s => Number(s.id) === Number(studentId));
+    if (!student) {
+      this.showStudentsMessage('الطالب غير موجود في قائمتك', true);
+      return;
+    }
+
+    const code = String(student.student_code || '').trim();
+    if (!code) {
+      this.showStudentsMessage('لا يمكن عرض الكارنيه: كود الطالب غير متوفر', true);
+      return;
+    }
+
+    // Rapid double-click protection: reuse/close any existing card first so
+    // multiple backdrops are never stacked.
+    this.closeStudentQrCard();
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop student-qr-card-backdrop';
+    backdrop.dir = 'rtl';
+
+    const content = document.createElement('div');
+    content.className = 'modal-content';
+    content.setAttribute('role', 'dialog');
+    content.setAttribute('aria-modal', 'true');
+    content.setAttribute('aria-label', 'كارنيه الطالب');
+
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    const title = document.createElement('h3');
+    title.className = 'modal-title';
+    title.textContent = 'كارنيه الطالب';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'modal-close';
+    closeButton.setAttribute('aria-label', 'إغلاق');
+    closeButton.textContent = '✕';
+    header.append(title, closeButton);
+
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+
+    const card = document.createElement('div');
+    card.className = 'qr-card-box';
+
+    const nameEl = document.createElement('h3');
+    nameEl.style.cssText = 'margin:0;font-weight:800;font-size:1.2rem;color:#0f172a;';
+    nameEl.textContent = student.name || '—';
+
+    const classEl = document.createElement('p');
+    classEl.style.cssText = 'margin:0.35rem 0 0;font-size:0.85rem;color:#64748b;';
+    classEl.textContent = 'الصف الدراسي: ' + (student.grade_level || '—');
+
+    const groupEl = document.createElement('p');
+    groupEl.style.cssText = 'margin:0.2rem 0 0;font-size:0.85rem;color:#64748b;';
+    groupEl.textContent = 'المجموعة: ' + (student.group_name || '—');
+
+    const codeEl = document.createElement('div');
+    codeEl.className = 'qr-student-code';
+    codeEl.textContent = code;
+
+    const qrWrapper = document.createElement('div');
+    qrWrapper.className = 'qr-svg-wrapper';
+    qrWrapper.setAttribute('aria-label', 'كود QR الخاص بالطالب');
+
+    card.append(nameEl, classEl, groupEl, qrWrapper, codeEl);
+    body.appendChild(card);
+    content.append(header, body);
+    backdrop.appendChild(content);
+    document.body.appendChild(backdrop);
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') this.closeStudentQrCard();
+    };
+    this._studentQrCard = { backdrop, onKeyDown };
+    closeButton.addEventListener('click', () => this.closeStudentQrCard());
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) this.closeStudentQrCard();
+    });
+    document.addEventListener('keydown', onKeyDown);
+
+    this.renderStudentQrSvg(qrWrapper, code);
+    closeButton.focus();
+  }
+
+  /** Close (and detach) the open student QR card, if any. Safe to call always. */
+  closeStudentQrCard() {
+    const card = this._studentQrCard;
+    if (!card) return;
+    document.removeEventListener('keydown', card.onKeyDown);
+    if (card.backdrop && card.backdrop.parentNode) {
+      card.backdrop.parentNode.removeChild(card.backdrop);
+    }
+    this._studentQrCard = null;
+  }
+
+  /**
+   * Draw a real, scannable QR into `container` using the project's vendored
+   * encoder (assets/js/qr-encoder.js, the same `qrcode` global the dynamic
+   * attendance QR uses). The decorative `QrSvgGenerator` (qr-generator.js)
+   * is intentionally NOT used: it produces a non-scannable pattern.
+   */
+  renderStudentQrSvg(container, value) {
+    if (!container) return;
+    try {
+      if (typeof qrcode === 'function') {
+        const qr = qrcode(0, 'M');
+        qr.addData(String(value));
+        qr.make();
+        container.innerHTML = qr.createSvgTag(4, 4);
+      } else {
+        container.textContent = 'تعذر توليد رمز QR';
+      }
+    } catch (e) {
+      container.textContent = 'تعذر توليد رمز QR';
+    }
+  }
+
   /** Dismiss the current server-side search results panel. */
   clearStudentSearch() {
     this.studentSearch = null;
@@ -1347,7 +1486,7 @@ class TeacherController {
           <td style="padding: 1rem;">${s.phone}</td>
           <td style="padding: 1rem;">${s.parent_phone}</td>
           <td style="padding: 1rem;">
-            <button class="btn btn-primary btn-sm" data-action="show-qr" data-code="${s.student_code}" data-name="${s.name}">عرض كارنيه QR</button>
+            <button class="btn btn-primary btn-sm" data-action="show-qr" data-id="${s.id}">عرض كارنيه QR</button>
           </td>
           <td style="padding: 1rem;">
             <div style="display: flex; gap: 0.5rem;">
@@ -2783,6 +2922,12 @@ class TeacherController {
     });
     this.container.querySelectorAll('[data-action="clear-student-search"]').forEach(btn => {
       btn.addEventListener('click', () => this.clearStudentSearch());
+    });
+    // P1-K-FIX: "عرض كارنيه QR" — open the student ID card. The student is
+    // resolved BY ID from the server-scoped list (never from arbitrary DOM
+    // data and never by any teacher_id).
+    this.container.querySelectorAll('[data-action="show-qr"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openStudentQrCard(Number(btn.dataset.id)));
     });
     // "إضافة مجموعة" CTA shown on the students tab when the teacher has
     // classes but no study group yet.
