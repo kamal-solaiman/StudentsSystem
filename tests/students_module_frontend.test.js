@@ -58,8 +58,8 @@ function loadApi(fetchImpl, pathname = '/110/teacher/students') {
   return { ApiClient: sandbox.ApiClient, sessionStorage };
 }
 
-function loadStudentHelpers() {
-  const sandbox = { Object, String, Array, Number };
+function loadStudentHelpers(apiClient = null) {
+  const sandbox = { Object, String, Array, Number, ApiClient: apiClient || {} };
   vm.runInNewContext(read('assets/js/teacher.js') + `
     this.helpers = {
       escapeStudentText,
@@ -70,6 +70,8 @@ function loadStudentHelpers() {
       STUDENT_GENDER_OPTIONS,
       STUDENT_DEFAULT_PASSWORD,
       STUDENT_LINK_STATE_LABELS,
+      STUDENT_PROFILE_TABS,
+      formatStudentProfileDate,
       TeacherController
     };`, sandbox);
   return sandbox.helpers;
@@ -194,7 +196,18 @@ test('06 student calls carry the CSRF token in the header and the body', async (
   assert.equal(JSON.parse(call.options.body).csrf_token, 'csrf-test');
 });
 
-test('07 the ApiClient never exposes a hard-delete student helper', () => {
+test('07 student profile posts a CSRF-protected id/section envelope without teacher_id', async () => {
+  const [call] = await captureApiCall(api => api.getTeacherStudentProfile(77, 'attendance', 2));
+  const body = JSON.parse(call.options.body);
+  assert.equal(call.options.method, 'POST');
+  assert.equal(body.action, 'student_profile');
+  assert.deepEqual(body.payload, { student_id: 77, section: 'attendance', page: 2 });
+  assert.equal(body.payload.teacher_id, undefined);
+  assert.equal(call.options.headers['X-CSRF-Token'], 'csrf-test');
+  assert.equal(body.csrf_token, 'csrf-test');
+});
+
+test('07b the ApiClient never exposes a hard-delete student helper', () => {
   assert.ok(!/deleteStudent\s*\(/.test(apiSource), 'no deleteStudent helper may exist');
   assert.ok(/static async unlinkStudent/.test(apiSource));
 });
@@ -329,7 +342,9 @@ test('16 the students table renders the required columns plus the actions column
   assert.match(html, /كود الطالب/);
   assert.match(html, /اسم الطالب/);
   assert.match(html, /المجموعة/);
-  assert.match(html, /كارنيه الحضور/);
+  assert.match(html, /ملف الطالب/);
+  assert.match(html, /الصفحة الشخصية/);
+  assert.ok(!/عرض كارنيه QR/.test(html), 'QR is no longer a primary list action');
   assert.match(html, /الإجراءات/);
   assert.match(html, /STU-10045/);
   assert.match(html, /يوسف محمد سعيد/);
@@ -377,6 +392,145 @@ test('19 the students tab renders an inline message banner', () => {
     studentsMessage: { text: 'فشل', isError: true }
   });
   assert.match(bad, /#b91c1c/);
+});
+
+function profileOverviewFixture() {
+  return {
+    success: true,
+    section: 'overview',
+    student_id: 77,
+    profile: {
+      student: {
+        id: 77, student_code: 'STU-10045', name: 'يوسف محمد سعيد', phone: '01044444441',
+        email: 'youssef@student.edu', parent_phone: '01099999999', gender: 'male',
+        date_of_birth: '2008-03-14', address: 'الدقي', platform_registered_at: '2025-09-01 10:30:00'
+      },
+      enrollment: { enrollment_date: '2026-01-15', status: 'active', group_joined_at: null },
+      class: { id: 1, name: 'الصف الثالث الثانوي' },
+      group: {
+        id: 2, name: 'مجموعة الأحد والثلاثاء', study_days: ['الأحد', 'الثلاثاء'],
+        class_time: '17:00', end_time: '19:00', price: 350, payment_scheme: 'monthly'
+      }
+    },
+    summaries: {
+      attendance: { total_records: 8, present_count: 5, absent_count: 2, late_count: 1, attendance_rate: 75 },
+      exams: { total_exams: 3, graded_count: 2, average_percentage: 90 },
+      homeworks: { total_homeworks: 4, submitted_count: 3, graded_count: 2 }
+    },
+    payments: { available: false, message: 'البيانات المالية غير متاحة حاليًا' }
+  };
+}
+
+function profileController(apiClient = null) {
+  const { TeacherController } = loadStudentHelpers(apiClient);
+  const controller = new TeacherController({}, {
+    students: [{
+      id: 77, student_code: 'STU-10045', name: 'يوسف محمد سعيد',
+      grade_level: 'الصف الثالث الثانوي', group_name: 'مجموعة الأحد والثلاثاء'
+    }]
+  }, null);
+  controller.studentProfile = {
+    studentId: 77,
+    generation: 1,
+    state: 'ready',
+    error: null,
+    activeTab: 'overview',
+    overview: profileOverviewFixture(),
+    sections: {}
+  };
+  return controller;
+}
+
+test('19a the full profile renders header, quick stats, tabs and teacher relationship data', () => {
+  const html = profileController().renderStudentProfile();
+  assert.match(html, /الصفحة الشخصية للطالب/);
+  assert.match(html, /يوسف محمد سعيد/);
+  assert.match(html, /STU-10045/);
+  assert.match(html, /نظرة عامة/);
+  assert.match(html, /الحضور والغياب/);
+  assert.match(html, /الامتحانات/);
+  assert.match(html, /الواجبات/);
+  assert.match(html, /المجموعة/);
+  assert.match(html, /المدفوعات/);
+  assert.match(html, /تاريخ الانضمام للمدرس/);
+  assert.match(html, /غير متاح في النظام الحالي/);
+  assert.match(html, /75%/);
+});
+
+test('19b QR is inside the profile and absent as a primary students-list action', () => {
+  const profileHtml = profileController().renderStudentProfile();
+  assert.match(profileHtml, /عرض كارنية QR/);
+  assert.match(profileHtml, /data-action="show-qr" data-id="77"/);
+  const listHtml = renderStudentsFixture({
+    data: {
+      classes: [{ id: 1, name: 'ص' }], groups: [{ id: 2, name: 'م', class_id: 1 }],
+      students: [{ id: 77, student_code: 'STU-1', name: 'س', grade_level: 'ص', group_name: 'م', phone: '', parent_phone: '' }]
+    }
+  });
+  assert.ok(!/data-action="show-qr"/.test(listHtml));
+  assert.match(listHtml, /data-action="open-student-profile" data-id="77"/);
+});
+
+test('19c profile history tabs are lazy-loaded once and cached on revisit', async () => {
+  const calls = [];
+  const controller = profileController({
+    async getTeacherStudentProfile(studentId, section, page) {
+      calls.push({ studentId, section, page });
+      return { section, student_id: studentId, records: [], pagination: { page, total_pages: 1, total: 0 } };
+    }
+  });
+  controller.render = () => {};
+  await controller.loadStudentProfileSection('attendance', 1);
+  await controller.loadStudentProfileSection('attendance', 1);
+  assert.deepEqual(calls, [{ studentId: 77, section: 'attendance', page: 1 }]);
+  assert.equal(controller.studentProfile.sections.attendance.state, 'ready');
+});
+
+test('19d profile date formatting is deterministic and does not timezone-shift SQL dates', () => {
+  const { formatStudentProfileDate } = loadStudentHelpers();
+  assert.equal(formatStudentProfileDate('2026-01-15'), '15/01/2026');
+  assert.equal(formatStudentProfileDate('2026-01-15 17:30:00', true), '15/01/2026 — 17:30');
+  assert.equal(formatStudentProfileDate(null), 'غير متاح');
+});
+
+test('19e payments explicitly stay unavailable because there is no payment ledger', () => {
+  const controller = profileController();
+  const html = controller.renderStudentProfilePayments(profileOverviewFixture().payments);
+  assert.match(html, /البيانات المالية غير متاحة حاليًا/);
+  assert.match(html, /لا يوجد في النظام الحالي جدول لسجلات الدفع/);
+});
+
+test('19f closing and opening another student resets the profile without a dashboard refetch', async () => {
+  const calls = [];
+  const controller = profileController({
+    async getTeacherStudentProfile(studentId, section, page) {
+      calls.push({ studentId, section, page });
+      const overview = profileOverviewFixture();
+      overview.student_id = studentId;
+      overview.profile.student.id = studentId;
+      return overview;
+    }
+  });
+  controller.render = () => {};
+  controller.studentProfile = null;
+  await controller.openStudentProfile(77);
+  controller.closeStudentProfile();
+  assert.equal(controller.studentProfile, null);
+  await controller.openStudentProfile(88);
+  assert.equal(controller.studentProfile.studentId, 88);
+  assert.equal(controller.studentProfile.overview.student_id, 88);
+  assert.deepEqual(calls.map(call => call.studentId), [77, 88]);
+});
+
+test('19g profile errors distinguish auth, permission, missing, conflict, throttle, server and network states', () => {
+  const controller = profileController();
+  assert.equal(controller.describeApiError({ status: 401 }).title, 'انتهت الجلسة');
+  assert.equal(controller.describeApiError({ status: 403 }).title, 'غير مصرح بهذا الإجراء');
+  assert.equal(controller.describeApiError({ status: 404 }).title, 'البيانات غير موجودة');
+  assert.equal(controller.describeApiError({ status: 409 }).title, 'تعذر إتمام العملية');
+  assert.equal(controller.describeApiError({ status: 429 }).title, 'محاولات كثيرة');
+  assert.equal(controller.describeApiError({ status: 500 }).title, 'خطأ في الخادم');
+  assert.equal(controller.describeApiError({ isNetworkError: true }).title, 'تعذر الاتصال بالخادم');
 });
 
 /* ===============================================================
@@ -518,7 +672,8 @@ test('29 every students action is bound in attachEventListeners', () => {
     ['link-student', 'confirmLinkStudent'],
     ['transfer-student', 'openTransferStudentModal'],
     ['unlink-student', 'confirmUnlinkStudent'],
-    ['clear-student-search', 'clearStudentSearch']
+    ['clear-student-search', 'clearStudentSearch'],
+    ['open-student-profile', 'openStudentProfile']
   ].forEach(([action, handler]) => {
     assert.match(
       teacherSource,
@@ -564,8 +719,8 @@ test('33 the backend never hard-deletes a student', () => {
   assert.match(backendSource, /UPDATE student_enrollments\s*\n\s*SET status = \\'inactive\\'/);
 });
 
-test('34 all five student actions exist and take the tenant from the session only', () => {
-  ['search_students', 'create_student', 'enroll_existing_student', 'transfer_student_group', 'unlink_student']
+test('34 all six student actions exist and take the tenant from the session only', () => {
+  ['search_students', 'create_student', 'enroll_existing_student', 'student_profile', 'transfer_student_group', 'unlink_student']
     .forEach(action => assert.match(backendSource, new RegExp(`\\$action === '${action}'`)));
   // teacher_id always comes from the resolved session tenant
   assert.ok(!/\$payload\['teacher_id'\]/.test(backendCode));
@@ -630,9 +785,56 @@ test('41 the teacher students list and the students report only show ACTIVE link
 test('42 staff need the existing students permission for every student action', () => {
   const first = backendSource.indexOf("$action === 'create_student'");
   const rbac = backendSource.slice(first - 400, first + 900);
-  ['search_students', 'create_student', 'enroll_existing_student', 'transfer_student_group', 'unlink_student']
+  ['search_students', 'create_student', 'enroll_existing_student', 'student_profile', 'transfer_student_group', 'unlink_student']
     .forEach(action => assert.match(rbac, new RegExp(`\\$action === '${action}'`)));
   assert.match(rbac, /AuthManager::requirePermission\('students'\)/);
+});
+
+test('42a profile ownership starts at an active tenant enrollment and returns a uniform 404', () => {
+  const helperStart = backendSource.indexOf('function teacherRequireOwnedStudentProfile');
+  const helperEnd = backendSource.indexOf('function teacherStudentProfilePagination');
+  const helper = backendSource.slice(helperStart, helperEnd);
+  assert.match(helper, /FROM student_enrollments se/);
+  assert.match(helper, /WHERE se\.teacher_id = :tid/);
+  assert.match(helper, /se\.student_id = :sid/);
+  assert.match(helper, /se\.status = \\'active\\'/);
+  assert.match(helper, /sg\.teacher_id = se\.teacher_id/);
+  assert.match(helper, /ac\.teacher_id = se\.teacher_id/);
+  assert.match(helper, /Helper::sendNotFound\('الطالب غير موجود في قائمتك'\)/);
+});
+
+test('42b every profile history source is scoped by session teacher and student/owned group', () => {
+  const block = backendActionBlock('student_profile', 'search_students');
+  assert.match(block, /attendance_records[\s\S]*teacher_id = :tid AND student_id = :sid/);
+  assert.match(block, /FROM student_exam_results[\s\S]*student_id = :result_sid AND teacher_id = :result_tid/);
+  assert.match(block, /WHERE e\.teacher_id = :exam_tid/);
+  assert.match(block, /FROM student_homework_submissions[\s\S]*student_id = :submission_sid AND teacher_id = :submission_tid/);
+  assert.match(block, /WHERE hw\.teacher_id = :homework_tid/);
+  assert.match(block, /LIMIT :record_limit OFFSET :record_offset/);
+  assert.match(block, /teacherStudentProfilePagination/);
+});
+
+test('42c profile response never exposes password hashes, QR secrets or global notes', () => {
+  const helperStart = backendSource.indexOf('function teacherRequireOwnedStudentProfile');
+  const helperEnd = backendSource.indexOf('function teacherStudentProfilePagination');
+  const helper = stripComments(backendSource.slice(helperStart, helperEnd));
+  assert.ok(!/password_hash/.test(helper));
+  assert.ok(!/qr_code_token/.test(helper));
+  assert.ok(!/s\.notes/.test(helper), 'global notes cannot be proven teacher-scoped');
+});
+
+test('42d the profile reuses the unchanged student-code QR implementation', () => {
+  const qrBlock = teacherSource.slice(
+    teacherSource.indexOf('openStudentQrCard(studentId) {'),
+    teacherSource.indexOf('clearStudentSearch() {')
+  );
+  assert.match(qrBlock, /const code = String\(student\.student_code/);
+  assert.match(qrBlock, /this\.renderStudentQrSvg\(qrWrapper, code\)/);
+  assert.match(qrBlock, /qr\.addData\(String\(value\)\)/);
+  assert.ok(!/qr_code_token/.test(qrBlock));
+  const profileBlock = backendActionBlock('student_profile', 'search_students');
+  assert.ok(!/UPDATE\s+students/i.test(profileBlock));
+  assert.ok(!/INSERT\s+INTO/i.test(profileBlock));
 });
 
 /* ===============================================================

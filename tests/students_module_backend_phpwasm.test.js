@@ -137,9 +137,11 @@ const BASE_SCHEMA = `
 \\Keep::$pdo->exec("CREATE TABLE academic_classes (id SERIAL PRIMARY KEY, teacher_id INTEGER NOT NULL, name TEXT NOT NULL, level TEXT NOT NULL, grade TEXT NULL, description TEXT NULL, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE study_groups (id SERIAL PRIMARY KEY, teacher_id INTEGER NOT NULL, class_id INTEGER NOT NULL, name TEXT NOT NULL, study_days TEXT NOT NULL, class_time TEXT NOT NULL, end_time TEXT NULL, shift TEXT NOT NULL, price NUMERIC(10,2) NOT NULL, payment_scheme TEXT NOT NULL, created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE student_enrollments (id SERIAL PRIMARY KEY, teacher_id INTEGER, student_id INTEGER, class_id INTEGER, group_id INTEGER, enrollment_date TEXT, status TEXT, payment_status TEXT, created_at TEXT, CONSTRAINT uq_enrollment_teacher_student UNIQUE (teacher_id, student_id))");
-\\Keep::$pdo->exec("CREATE TABLE attendance_records (id SERIAL PRIMARY KEY, teacher_id INTEGER, student_id INTEGER, group_id INTEGER, date TEXT, status TEXT, present TEXT, absent TEXT, late TEXT)");
-\\Keep::$pdo->exec("CREATE TABLE exams (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
-\\Keep::$pdo->exec("CREATE TABLE homeworks (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
+\\Keep::$pdo->exec("CREATE TABLE attendance_records (id SERIAL PRIMARY KEY, teacher_id INTEGER, student_id INTEGER, group_id INTEGER, date TEXT, status TEXT, arrival_time TEXT NULL, departure_time TEXT NULL, late_minutes INTEGER DEFAULT 0, method TEXT NULL, notes TEXT NULL, present TEXT NULL, absent TEXT NULL, late TEXT NULL, created_at TEXT NULL)");
+\\Keep::$pdo->exec("CREATE TABLE exams (id SERIAL PRIMARY KEY, teacher_id INTEGER, class_id INTEGER, group_id INTEGER NULL, title TEXT NULL, date TEXT NULL, time TEXT NULL, duration_minutes INTEGER NULL, exam_type TEXT NULL, total_points NUMERIC(8,2) NULL, is_published INTEGER NULL, created_at TEXT NULL)");
+\\Keep::$pdo->exec("CREATE TABLE student_exam_results (id SERIAL PRIMARY KEY, exam_id INTEGER, student_id INTEGER, teacher_id INTEGER, score NUMERIC(8,2), max_score NUMERIC(8,2), status TEXT, submitted_at TEXT NULL, feedback TEXT NULL)");
+\\Keep::$pdo->exec("CREATE TABLE homeworks (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER, title TEXT NULL, description TEXT NULL, due_date TEXT NULL, max_grade NUMERIC(6,2) NULL, created_at TEXT NULL)");
+\\Keep::$pdo->exec("CREATE TABLE student_homework_submissions (id SERIAL PRIMARY KEY, homework_id INTEGER, student_id INTEGER, teacher_id INTEGER, status TEXT, grade NUMERIC(6,2) NULL, feedback TEXT NULL, submitted_at TEXT NULL)");
 \\Keep::$pdo->exec("CREATE TABLE lesson_videos (id SERIAL PRIMARY KEY, teacher_id INTEGER, group_id INTEGER)");
 \\Keep::$pdo->exec("CREATE TABLE teachers (id SERIAL PRIMARY KEY, user_id INTEGER, name TEXT, center_name TEXT, phone TEXT, address TEXT, logo TEXT, subject TEXT, price_per_student NUMERIC(10,2), created_at TEXT)");
 \\Keep::$pdo->exec("CREATE TABLE students (id SERIAL PRIMARY KEY, user_id INTEGER, student_code TEXT UNIQUE, name TEXT, gender TEXT NULL, date_of_birth TEXT NULL, phone TEXT, parent_phone TEXT, parent_user_id INTEGER NULL, address TEXT NULL, notes TEXT NULL, grade_level TEXT, qr_code_token TEXT, created_at TEXT)");
@@ -174,6 +176,21 @@ function seedStudentsWorld(today) {
 \\Keep::$pdo->exec("INSERT INTO attendance_records (id, teacher_id, student_id, group_id, date, status, present, absent, late) VALUES (1, 1, 1, 1, '${today}', 'present', 'present', 'absent', 'late')");
 \\Keep::$pdo->exec("INSERT INTO teacher_staff (id, teacher_id, user_id, role_title, permissions) VALUES (1, 1, 4, 'secretary', '[]')");
 ${BUMP_SEQUENCES}
+`;
+}
+
+/** Extra rows used only by P1-L profile tests (two teachers, same student). */
+function seedStudentProfileWorld(today) {
+  return seedStudentsWorld(today) + `
+\\Keep::$pdo->exec("UPDATE students SET gender = 'male', date_of_birth = '2008-03-14', address = 'الدقي', created_at = '2025-09-01 10:30:00' WHERE id = 1");
+\\Keep::$pdo->exec("UPDATE student_enrollments SET created_at = '2026-01-15 09:00:00' WHERE id = 1");
+\\Keep::$pdo->exec("UPDATE study_groups SET end_time = '19:00' WHERE id = 1");
+\\Keep::$pdo->exec("UPDATE attendance_records SET arrival_time = '16:55', departure_time = '19:00', late_minutes = 0, method = 'dynamic_qr', notes = 'حضور أحمد' WHERE id = 1");
+\\Keep::$pdo->exec("INSERT INTO attendance_records (id, teacher_id, student_id, group_id, date, status, arrival_time, departure_time, late_minutes, method, notes) VALUES (2, 1, 1, 1, '2026-02-02', 'absent', NULL, NULL, 0, 'manual', 'غياب أحمد'), (3, 1, 1, 1, '2026-02-03', 'late', '17:15', '19:00', 15, 'id_scanner', 'تأخير أحمد'), (4, 2, 1, 4, '2026-02-04', 'present', '19:00', '21:00', 0, 'manual', 'سجل سارة السري')");
+\\Keep::$pdo->exec("INSERT INTO exams (id, teacher_id, class_id, group_id, title, date, total_points) VALUES (1, 1, 1, 1, 'امتحان أحمد', '2026-03-01', 20), (2, 2, 4, 4, 'امتحان سارة السري', '2026-03-02', 30), (3, 1, 1, 2, 'امتحان مجموعة أخرى', '2026-03-03', 15), (4, 1, 1, NULL, 'امتحان الصف العام', '2026-03-04', 25)");
+\\Keep::$pdo->exec("INSERT INTO student_exam_results (id, exam_id, student_id, teacher_id, score, max_score, status, submitted_at, feedback) VALUES (1, 1, 1, 1, 18, 20, 'graded', '2026-03-01 18:00:00', 'ممتاز لدى أحمد'), (2, 2, 1, 2, 29, 30, 'graded', '2026-03-02 20:00:00', 'ملاحظة سارة السرية')");
+\\Keep::$pdo->exec("INSERT INTO homeworks (id, teacher_id, group_id, title, description, due_date, max_grade, created_at) VALUES (1, 1, 1, 'واجب أحمد', 'وصف أحمد', '2026-03-10', 10, '2026-03-01 09:00:00'), (2, 2, 4, 'واجب سارة السري', 'وصف سري', '2026-03-11', 20, '2026-03-02 09:00:00'), (3, 1, 2, 'واجب مجموعة أخرى', 'لا يخص الطالب', '2026-03-12', 10, '2026-03-03 09:00:00'), (4, 1, 1, 'واجب لم يسلم', 'واجب حالي', '2026-03-13', 10, '2026-03-04 09:00:00')");
+\\Keep::$pdo->exec("INSERT INTO student_homework_submissions (id, homework_id, student_id, teacher_id, status, grade, feedback, submitted_at) VALUES (1, 1, 1, 1, 'graded', 9, 'جيد لدى أحمد', '2026-03-09 12:00:00'), (2, 2, 1, 2, 'graded', 20, 'ملاحظة واجب سارة السرية', '2026-03-10 12:00:00')");
 `;
 }
 
@@ -922,6 +939,8 @@ const SESSION_STAFF_1 = {
     assert.equal(body.all_platform_students, undefined);
     const raw = JSON.stringify(body);
     assert.ok(!raw.includes('ORIGINAL-HASH'), 'the dashboard must not leak password hashes');
+    assert.ok(!raw.includes('QR-1'), 'the roster does not need the legacy QR token');
+    assert.equal(body.students[0].notes, undefined, 'global notes are not teacher-scoped roster data');
   });
 
   test('a hidden student disappears from the GET list and comes back after re-linking', { skip }, async () => {
@@ -982,6 +1001,143 @@ const SESSION_STAFF_1 = {
   });
 
   /* ================================================================ */
+  /* P1-L — teacher-scoped student profile                            */
+  /* ================================================================ */
+
+  test('student_profile overview returns the owned identity, relationship and correct summaries', { skip }, async () => {
+    const { out } = await runEndpointCase({
+      seed: seedStudentProfileWorld(today),
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'overview', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 200);
+    assert.equal(result.data.profile.student.student_code, 'STU-10045');
+    assert.equal(result.data.profile.student.email, 'youssef@student.edu');
+    assert.equal(result.data.profile.enrollment.enrollment_date, '2026-01-15');
+    assert.equal(result.data.profile.enrollment.group_joined_at, null, 'group join date is not in the schema');
+    assert.equal(result.data.profile.class.name, 'الصف الثالث الثانوي');
+    assert.equal(result.data.profile.group.name, 'مجموعة الأحد والثلاثاء');
+    assert.deepEqual(result.data.profile.group.study_days, ['الأحد', 'الثلاثاء']);
+    assert.equal(result.data.profile.group.price, 350);
+    assert.equal(result.data.summaries.attendance.present_count, 1);
+    assert.equal(result.data.summaries.attendance.absent_count, 1);
+    assert.equal(result.data.summaries.attendance.late_count, 1);
+    assert.equal(result.data.summaries.attendance.attendance_rate, 66.7);
+    assert.equal(result.data.summaries.exams.total_exams, 2); // own group + class-wide
+    assert.equal(result.data.summaries.exams.graded_count, 1);
+    assert.equal(result.data.summaries.homeworks.total_homeworks, 2);
+    assert.equal(result.data.summaries.homeworks.graded_count, 1);
+    assert.equal(result.data.payments.available, false);
+  });
+
+  test('student_profile returns the same 404 for a missing or foreign/unlinked student (IDOR)', { skip }, async () => {
+    for (const studentId of [2, 999]) {
+      const { out } = await runEndpointCase({
+        seed: seedStudentProfileWorld(today),
+        input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: studentId, section: 'overview', page: 1 } }
+      });
+      const result = exitResult(out);
+      assert.equal(result.status, 404);
+      assert.equal(responseMessage(result), 'الطالب غير موجود في قائمتك');
+    }
+  });
+
+  test('the same student gets different teacher-scoped group and summary data for Teacher A and B', { skip }, async () => {
+    const teacherA = await runEndpointCase({
+      seed: seedStudentProfileWorld(today),
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'overview', page: 1 } }
+    });
+    const teacherB = await runEndpointCase({
+      seed: seedStudentProfileWorld(today), session: SESSION_TEACHER_2,
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'overview', page: 1 } }
+    });
+    const a = exitResult(teacherA.out).data;
+    const b = exitResult(teacherB.out).data;
+    assert.equal(a.profile.group.name, 'مجموعة الأحد والثلاثاء');
+    assert.equal(b.profile.group.name, 'مجموعة التفوق');
+    assert.equal(a.summaries.attendance.total_records, 3);
+    assert.equal(b.summaries.attendance.total_records, 1);
+    assert.ok(!JSON.stringify(a).includes('سارة السر'));
+    assert.ok(!JSON.stringify(b).includes('حضور أحمد'));
+  });
+
+  test('student_profile attendance records are paginated and tenant-scoped', { skip }, async () => {
+    const { out } = await runEndpointCase({
+      seed: seedStudentProfileWorld(today),
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'attendance', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 200);
+    assert.equal(result.data.pagination.total, 3);
+    assert.equal(result.data.records.length, 3);
+    assert.deepEqual(result.data.records.map(row => row.status).sort(), ['absent', 'late', 'present']);
+    assert.ok(!JSON.stringify(result.data).includes('سجل سارة السري'));
+  });
+
+  test('student_profile exams include only this teacher assignments/results for this student', { skip }, async () => {
+    const { out } = await runEndpointCase({
+      seed: seedStudentProfileWorld(today),
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'exams', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.data.records.map(row => row.title).sort(), ['امتحان أحمد', 'امتحان الصف العام'].sort());
+    assert.equal(result.data.records.find(row => row.title === 'امتحان أحمد').percentage, 90);
+    assert.equal(result.data.records.find(row => row.title === 'امتحان الصف العام').status, 'no_result');
+    assert.ok(!JSON.stringify(result.data).includes('امتحان سارة السري'));
+    assert.ok(!JSON.stringify(result.data).includes('امتحان مجموعة أخرى'));
+  });
+
+  test('student_profile homeworks include only this teacher/current group and scoped submissions', { skip }, async () => {
+    const { out } = await runEndpointCase({
+      seed: seedStudentProfileWorld(today),
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'homeworks', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.data.records.map(row => row.title).sort(), ['واجب أحمد', 'واجب لم يسلم'].sort());
+    assert.equal(result.data.records.find(row => row.title === 'واجب أحمد').grade, 9);
+    assert.equal(result.data.records.find(row => row.title === 'واجب لم يسلم').status, 'no_submission');
+    assert.ok(!JSON.stringify(result.data).includes('واجب سارة السري'));
+    assert.ok(!JSON.stringify(result.data).includes('واجب مجموعة أخرى'));
+  });
+
+  test('student_profile ignores a forged payload teacher_id and always uses the session tenant', { skip }, async () => {
+    const { out } = await runEndpointCase({
+      seed: seedStudentProfileWorld(today), session: SESSION_TEACHER_2,
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { teacher_id: 1, student_id: 1, section: 'overview', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 200);
+    assert.equal(result.data.profile.group.name, 'مجموعة التفوق');
+    assert.equal(result.data.summaries.attendance.total_records, 1);
+  });
+
+  test('student_profile requires an authenticated session (401)', { skip }, async () => {
+    const { out } = await runEndpointCase({
+      seed: seedStudentProfileWorld(today), session: {},
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'overview', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 401);
+    assert.equal(responseMessage(result), 'Authentication required');
+  });
+
+  test('staff with the students permission may view only their tenant student profile', { skip }, async () => {
+    const seed = seedStudentProfileWorld(today) + `
+\\Keep::$pdo->exec("UPDATE teacher_staff SET permissions = '[\\"students\\"]' WHERE user_id = 4");
+`;
+    const { out } = await runEndpointCase({
+      seed, session: SESSION_STAFF_1,
+      input: { action: 'student_profile', csrf_token: 'csrf-ok', payload: { student_id: 1, section: 'overview', page: 1 } }
+    });
+    const result = exitResult(out);
+    assert.equal(result.status, 200);
+    assert.equal(result.data.profile.group.name, 'مجموعة الأحد والثلاثاء');
+    assert.equal(result.data.summaries.attendance.total_records, 3);
+  });
+
+  /* ================================================================ */
   /* Scenario H — parent handling                                     */
   /* ================================================================ */
 
@@ -1010,7 +1166,7 @@ const SESSION_STAFF_1 = {
   /* ================================================================ */
 
   test('every student action requires a valid CSRF token', { skip }, async () => {
-    for (const action of ['search_students', 'create_student', 'enroll_existing_student', 'transfer_student_group', 'unlink_student']) {
+    for (const action of ['search_students', 'create_student', 'enroll_existing_student', 'student_profile', 'transfer_student_group', 'unlink_student']) {
       const { out } = await runEndpointCase({
         input: { action, csrf_token: 'wrong-token', payload: { class_id: 1, group_id: 1, student_id: 1, name: 'x', query: 'يوسف' } }
       });
@@ -1023,7 +1179,7 @@ const SESSION_STAFF_1 = {
     const seed = seedStudentsWorld(today) + `
 \\Keep::$pdo->exec("UPDATE teacher_staff SET permissions = '[\\"attendance\\", \\"groups\\"]' WHERE user_id = 4");
 `;
-    for (const action of ['search_students', 'create_student', 'enroll_existing_student', 'transfer_student_group', 'unlink_student']) {
+    for (const action of ['search_students', 'create_student', 'enroll_existing_student', 'student_profile', 'transfer_student_group', 'unlink_student']) {
       const { out } = await runEndpointCase({
         seed,
         session: SESSION_STAFF_1,

@@ -552,6 +552,150 @@ function teacherGenerateStudentCode(PDO $db): string
     Helper::sendJson(['success' => false, 'error' => 'تعذر توليد كود طالب فريد، حاول مرة أخرى'], 500);
 }
 
+/* ================================================================
+ * P1-L: Teacher-scoped student profile helpers.
+ *
+ * IMPORTANT: a student is a global platform identity, but every profile
+ * request starts from the ACTIVE student_enrollments row of the authenticated
+ * session tenant. The group and class joins are tenant-qualified as well. A
+ * caller can therefore never use a valid global student id to traverse into
+ * another teacher's relationship data.
+ * ================================================================ */
+
+/** Strictly parse a positive integer supplied in a profile payload. */
+function teacherProfilePositiveInt(mixed $raw, string $error): int
+{
+    $valid = is_int($raw)
+        || (is_string($raw) && $raw !== '' && ctype_digit($raw));
+    if (!$valid || (int)$raw <= 0) {
+        Helper::sendJson(['success' => false, 'error' => $error], 400);
+    }
+    return (int)$raw;
+}
+
+/**
+ * Resolve the student's global identity through THIS teacher's active link.
+ *
+ * The single tenant-qualified query intentionally returns 404 both when the
+ * student id does not exist and when it exists but is not linked to this
+ * tenant. That uniform response prevents student-id enumeration (IDOR).
+ */
+function teacherRequireOwnedStudentProfile(PDO $db, int $studentId, int $teacherId): array
+{
+    $stmt = $db->prepare('
+        SELECT
+            s.id AS student_id, s.student_code, s.name AS student_name,
+            s.gender, s.date_of_birth, s.phone AS student_phone,
+            s.parent_phone, s.address, s.grade_level,
+            s.created_at AS platform_registered_at,
+            u.email AS student_email,
+            se.enrollment_date, se.status AS enrollment_status,
+            ac.id AS class_id, ac.name AS class_name,
+            ac.level AS class_level, ac.grade AS class_grade,
+            sg.id AS group_id, sg.name AS group_name,
+            sg.study_days, sg.class_time, sg.end_time, sg.shift,
+            sg.price, sg.payment_scheme
+        FROM student_enrollments se
+        JOIN students s ON s.id = se.student_id
+        JOIN users u ON u.id = s.user_id
+        JOIN academic_classes ac
+          ON ac.id = se.class_id AND ac.teacher_id = se.teacher_id
+        JOIN study_groups sg
+          ON sg.id = se.group_id
+         AND sg.teacher_id = se.teacher_id
+         AND sg.class_id = ac.id
+        WHERE se.teacher_id = :tid
+          AND se.student_id = :sid
+          AND se.status = \'active\'
+        LIMIT 1
+    ');
+    $stmt->execute(['tid' => $teacherId, 'sid' => $studentId]);
+    $row = $stmt->fetch();
+    if ($row === false) {
+        Helper::sendNotFound('الطالب غير موجود في قائمتك');
+    }
+
+    $daysRaw = json_decode((string)($row['study_days'] ?? ''), true);
+    $studyDays = [];
+    if (is_array($daysRaw)) {
+        foreach ($daysRaw as $day) {
+            if (is_string($day)) {
+                $studyDays[] = $day;
+            }
+        }
+    }
+
+    $email = trim((string)($row['student_email'] ?? ''));
+    // Teacher-created accounts without a real email use an internal login
+    // placeholder. It is not presented as the student's email address.
+    if ($email !== '' && str_ends_with(strtolower($email), '@student.local')) {
+        $email = '';
+    }
+
+    $parts = teacherAcademicClassParts(
+        (string)($row['class_level'] ?? ''),
+        isset($row['class_grade']) ? (string)$row['class_grade'] : null
+    );
+    $className = $parts['valid']
+        ? teacherAcademicClassName($parts['educational_stage'], $parts['grade'])
+        : (string)$row['class_name'];
+
+    return [
+        'student' => [
+            'id' => (int)$row['student_id'],
+            'student_code' => (string)$row['student_code'],
+            'name' => (string)$row['student_name'],
+            'phone' => (string)($row['student_phone'] ?? ''),
+            'email' => $email !== '' ? $email : null,
+            'parent_phone' => (string)($row['parent_phone'] ?? ''),
+            'gender' => $row['gender'] !== null ? (string)$row['gender'] : null,
+            'date_of_birth' => $row['date_of_birth'] !== null ? (string)$row['date_of_birth'] : null,
+            'address' => $row['address'] !== null ? (string)$row['address'] : null,
+            'grade_level' => (string)($row['grade_level'] ?? ''),
+            'platform_registered_at' => $row['platform_registered_at'] !== null
+                ? (string)$row['platform_registered_at'] : null,
+        ],
+        'enrollment' => [
+            'enrollment_date' => (string)$row['enrollment_date'],
+            'status' => (string)$row['enrollment_status'],
+            // The schema has no current-group joined-at field. enrollment_date
+            // is the teacher-link date and must not be mislabeled after transfer.
+            'group_joined_at' => null,
+        ],
+        'class' => [
+            'id' => (int)$row['class_id'],
+            'name' => $className,
+            'educational_stage' => $parts['educational_stage'],
+            'grade' => $parts['grade'],
+        ],
+        'group' => [
+            'id' => (int)$row['group_id'],
+            'name' => (string)$row['group_name'],
+            'study_days' => $studyDays,
+            'class_time' => (string)$row['class_time'],
+            'end_time' => $row['end_time'] !== null && $row['end_time'] !== ''
+                ? (string)$row['end_time'] : null,
+            'shift' => (string)$row['shift'],
+            'price' => (float)$row['price'],
+            'payment_scheme' => (string)$row['payment_scheme'],
+        ],
+    ];
+}
+
+/** Standard, bounded pagination metadata for profile history sections. */
+function teacherStudentProfilePagination(int $total, int $requestedPage, int $perPage = 10): array
+{
+    $totalPages = max(1, (int)ceil($total / $perPage));
+    $page = min(max(1, $requestedPage), $totalPages);
+    return [
+        'page' => $page,
+        'per_page' => $perPage,
+        'total' => $total,
+        'total_pages' => $totalPages,
+        'offset' => ($page - 1) * $perPage,
+    ];
+}
+
 Helper::handleCorsOptions();
 
 // SECURITY: Require authentication for all teacher endpoints
@@ -701,7 +845,8 @@ try {
         // students module hides the link (status = 'inactive') for this
         // teacher only and never touches the global student record.
         $stmtStudents = $db->prepare('
-            SELECT s.*, u.email AS email, se.id AS enrollment_id, se.group_id, se.class_id,
+            SELECT s.id, s.student_code, s.name, s.phone, s.parent_phone, s.grade_level,
+                   u.email AS email, se.id AS enrollment_id, se.group_id, se.class_id,
                    se.payment_status, se.enrollment_date, se.status AS enrollment_status,
                    sg.name AS group_name, ac.name AS class_name 
             FROM student_enrollments se 
@@ -814,6 +959,7 @@ try {
                 $action === 'create_student'
                 || $action === 'enroll_existing_student'
                 || $action === 'search_students'
+                || $action === 'student_profile'
                 || $action === 'transfer_student_group'
                 || $action === 'unlink_student'
             ) {
@@ -1024,6 +1170,364 @@ try {
                 'message' => 'تم تحديث المجموعة الدراسية بنجاح',
                 'name' => $group['name']
             ]);
+        }
+
+        /* ------------------------------------------------------------
+         * P1-L: Full teacher-scoped student profile, loaded by section.
+         *
+         * This is deliberately a CSRF-protected POST action. Every request —
+         * including lazy-loaded pages — re-proves the active relationship via
+         * teacherRequireOwnedStudentProfile() before reading any history.
+         * ------------------------------------------------------------ */
+        if ($action === 'student_profile') {
+            $studentId = teacherProfilePositiveInt(
+                $payload['student_id'] ?? null,
+                'معرف الطالب غير صالح'
+            );
+            $sectionRaw = $payload['section'] ?? 'overview';
+            if (!is_string($sectionRaw)) {
+                Helper::sendJson(['success' => false, 'error' => 'قسم الملف الشخصي غير صالح'], 400);
+            }
+            $section = trim($sectionRaw);
+            $allowedSections = ['overview', 'attendance', 'exams', 'homeworks'];
+            if (!in_array($section, $allowedSections, true)) {
+                Helper::sendJson(['success' => false, 'error' => 'قسم الملف الشخصي غير صالح'], 400);
+            }
+
+            $pageRaw = $payload['page'] ?? 1;
+            $page = teacherProfilePositiveInt($pageRaw, 'رقم الصفحة غير صالح');
+
+            // IDOR barrier: no global-student lookup is performed before this
+            // tenant-qualified relationship check. Missing and foreign ids get
+            // the exact same 404 response.
+            $profile = teacherRequireOwnedStudentProfile($db, $studentId, $teacherId);
+            $classId = (int)$profile['class']['id'];
+            $groupId = (int)$profile['group']['id'];
+
+            if ($section === 'overview') {
+                $stmtAttendance = $db->prepare('
+                    SELECT
+                        COUNT(*) AS total_records,
+                        SUM(CASE WHEN status = \'present\' THEN 1 ELSE 0 END) AS present_count,
+                        SUM(CASE WHEN status = \'absent\' THEN 1 ELSE 0 END) AS absent_count,
+                        SUM(CASE WHEN status = \'late\' THEN 1 ELSE 0 END) AS late_count
+                    FROM attendance_records
+                    WHERE teacher_id = :tid AND student_id = :sid
+                ');
+                $stmtAttendance->execute(['tid' => $teacherId, 'sid' => $studentId]);
+                $attendanceRow = $stmtAttendance->fetch() ?: [];
+                $totalAttendance = (int)($attendanceRow['total_records'] ?? 0);
+                $presentCount = (int)($attendanceRow['present_count'] ?? 0);
+                $absentCount = (int)($attendanceRow['absent_count'] ?? 0);
+                $lateCount = (int)($attendanceRow['late_count'] ?? 0);
+                // A late student attended the lesson, while remaining a
+                // separate database status/statistic.
+                $attendanceRate = $totalAttendance > 0
+                    ? round((($presentCount + $lateCount) / $totalAttendance) * 100, 1)
+                    : 0.0;
+
+                // Latest result per exam prevents duplicate legacy attempts
+                // from multiplying one exam in the summary. The exam itself
+                // must belong to this tenant and be assigned to the student's
+                // current class/group, unless this tenant already has a result
+                // for the student (preserves legitimate historical results).
+                $stmtExamSummary = $db->prepare('
+                    SELECT
+                        COUNT(*) AS total_exams,
+                        SUM(CASE WHEN ser.status = \'graded\' THEN 1 ELSE 0 END) AS graded_count,
+                        SUM(CASE WHEN ser.status = \'absent\' THEN 1 ELSE 0 END) AS absent_count,
+                        AVG(CASE
+                            WHEN ser.score IS NOT NULL
+                             AND COALESCE(NULLIF(ser.max_score, 0), NULLIF(e.total_points, 0)) IS NOT NULL
+                            THEN (ser.score / COALESCE(NULLIF(ser.max_score, 0), NULLIF(e.total_points, 0))) * 100
+                            ELSE NULL
+                        END) AS average_percentage
+                    FROM exams e
+                    LEFT JOIN (
+                        SELECT exam_id, MAX(id) AS result_id
+                        FROM student_exam_results
+                        WHERE student_id = :result_sid AND teacher_id = :result_tid
+                        GROUP BY exam_id
+                    ) latest_result ON latest_result.exam_id = e.id
+                    LEFT JOIN student_exam_results ser
+                      ON ser.id = latest_result.result_id
+                     AND ser.teacher_id = :ser_tid
+                    WHERE e.teacher_id = :exam_tid
+                      AND (
+                            (e.class_id = :class_id AND (e.group_id IS NULL OR e.group_id = :group_id))
+                            OR ser.id IS NOT NULL
+                      )
+                ');
+                $stmtExamSummary->execute([
+                    'result_sid' => $studentId,
+                    'result_tid' => $teacherId,
+                    'ser_tid' => $teacherId,
+                    'exam_tid' => $teacherId,
+                    'class_id' => $classId,
+                    'group_id' => $groupId,
+                ]);
+                $examRow = $stmtExamSummary->fetch() ?: [];
+
+                $stmtHomeworkSummary = $db->prepare('
+                    SELECT
+                        COUNT(*) AS total_homeworks,
+                        SUM(CASE WHEN shs.status IN (\'submitted\', \'graded\') THEN 1 ELSE 0 END) AS submitted_count,
+                        SUM(CASE WHEN shs.status = \'graded\' THEN 1 ELSE 0 END) AS graded_count,
+                        SUM(CASE WHEN shs.status = \'missing\' THEN 1 ELSE 0 END) AS missing_count
+                    FROM homeworks hw
+                    LEFT JOIN (
+                        SELECT homework_id, MAX(id) AS submission_id
+                        FROM student_homework_submissions
+                        WHERE student_id = :submission_sid AND teacher_id = :submission_tid
+                        GROUP BY homework_id
+                    ) latest_submission ON latest_submission.homework_id = hw.id
+                    LEFT JOIN student_homework_submissions shs
+                      ON shs.id = latest_submission.submission_id
+                     AND shs.teacher_id = :shs_tid
+                    WHERE hw.teacher_id = :homework_tid
+                      AND (hw.group_id = :group_id OR shs.id IS NOT NULL)
+                ');
+                $stmtHomeworkSummary->execute([
+                    'submission_sid' => $studentId,
+                    'submission_tid' => $teacherId,
+                    'shs_tid' => $teacherId,
+                    'homework_tid' => $teacherId,
+                    'group_id' => $groupId,
+                ]);
+                $homeworkRow = $stmtHomeworkSummary->fetch() ?: [];
+
+                Helper::sendJson([
+                    'success' => true,
+                    'section' => 'overview',
+                    'student_id' => $studentId,
+                    'profile' => $profile,
+                    'summaries' => [
+                        'attendance' => [
+                            'total_records' => $totalAttendance,
+                            'present_count' => $presentCount,
+                            'absent_count' => $absentCount,
+                            'late_count' => $lateCount,
+                            'attendance_rate' => $attendanceRate,
+                        ],
+                        'exams' => [
+                            'total_exams' => (int)($examRow['total_exams'] ?? 0),
+                            'graded_count' => (int)($examRow['graded_count'] ?? 0),
+                            'absent_count' => (int)($examRow['absent_count'] ?? 0),
+                            'average_percentage' => $examRow['average_percentage'] !== null
+                                ? round((float)$examRow['average_percentage'], 1) : null,
+                        ],
+                        'homeworks' => [
+                            'total_homeworks' => (int)($homeworkRow['total_homeworks'] ?? 0),
+                            'submitted_count' => (int)($homeworkRow['submitted_count'] ?? 0),
+                            'graded_count' => (int)($homeworkRow['graded_count'] ?? 0),
+                            'missing_count' => (int)($homeworkRow['missing_count'] ?? 0),
+                        ],
+                    ],
+                    // No payment ledger/transactions table exists in the
+                    // audited schema. Group price/scheme remain in group data,
+                    // but paid amount/date/month/method must not be invented.
+                    'payments' => [
+                        'available' => false,
+                        'message' => 'البيانات المالية غير متاحة حاليًا',
+                    ],
+                ]);
+            }
+
+            if ($section === 'attendance') {
+                $stmtCount = $db->prepare('
+                    SELECT COUNT(*) AS c
+                    FROM attendance_records
+                    WHERE teacher_id = :tid AND student_id = :sid
+                ');
+                $stmtCount->execute(['tid' => $teacherId, 'sid' => $studentId]);
+                $total = (int)($stmtCount->fetch()['c'] ?? 0);
+                $pagination = teacherStudentProfilePagination($total, $page);
+
+                $stmtRecords = $db->prepare('
+                    SELECT id, date, status, arrival_time, departure_time,
+                           late_minutes, method, notes
+                    FROM attendance_records
+                    WHERE teacher_id = :tid AND student_id = :sid
+                    ORDER BY date DESC, id DESC
+                    LIMIT :record_limit OFFSET :record_offset
+                ');
+                $stmtRecords->bindValue(':tid', $teacherId, PDO::PARAM_INT);
+                $stmtRecords->bindValue(':sid', $studentId, PDO::PARAM_INT);
+                $stmtRecords->bindValue(':record_limit', $pagination['per_page'], PDO::PARAM_INT);
+                $stmtRecords->bindValue(':record_offset', $pagination['offset'], PDO::PARAM_INT);
+                $stmtRecords->execute();
+
+                $records = [];
+                foreach ($stmtRecords->fetchAll() as $row) {
+                    $records[] = [
+                        'id' => (int)$row['id'],
+                        'date' => (string)$row['date'],
+                        'status' => (string)$row['status'],
+                        'arrival_time' => $row['arrival_time'] !== null ? (string)$row['arrival_time'] : null,
+                        'departure_time' => $row['departure_time'] !== null ? (string)$row['departure_time'] : null,
+                        'late_minutes' => (int)($row['late_minutes'] ?? 0),
+                        'method' => (string)$row['method'],
+                        'notes' => $row['notes'] !== null ? (string)$row['notes'] : null,
+                    ];
+                }
+
+                unset($pagination['offset']);
+                Helper::sendJson([
+                    'success' => true,
+                    'section' => 'attendance',
+                    'student_id' => $studentId,
+                    'records' => $records,
+                    'pagination' => $pagination,
+                ]);
+            }
+
+            if ($section === 'exams') {
+                $examFrom = '
+                    FROM exams e
+                    LEFT JOIN (
+                        SELECT exam_id, MAX(id) AS result_id
+                        FROM student_exam_results
+                        WHERE student_id = :result_sid AND teacher_id = :result_tid
+                        GROUP BY exam_id
+                    ) latest_result ON latest_result.exam_id = e.id
+                    LEFT JOIN student_exam_results ser
+                      ON ser.id = latest_result.result_id
+                     AND ser.teacher_id = :ser_tid
+                    WHERE e.teacher_id = :exam_tid
+                      AND (
+                            (e.class_id = :class_id AND (e.group_id IS NULL OR e.group_id = :group_id))
+                            OR ser.id IS NOT NULL
+                      )
+                ';
+                $examParams = [
+                    'result_sid' => $studentId,
+                    'result_tid' => $teacherId,
+                    'ser_tid' => $teacherId,
+                    'exam_tid' => $teacherId,
+                    'class_id' => $classId,
+                    'group_id' => $groupId,
+                ];
+                $stmtCount = $db->prepare('SELECT COUNT(*) AS c ' . $examFrom);
+                $stmtCount->execute($examParams);
+                $total = (int)($stmtCount->fetch()['c'] ?? 0);
+                $pagination = teacherStudentProfilePagination($total, $page);
+
+                $stmtRecords = $db->prepare('
+                    SELECT e.id, e.title, e.date, e.total_points,
+                           ser.score, ser.max_score, ser.status AS result_status,
+                           ser.submitted_at, ser.feedback
+                    ' . $examFrom . '
+                    ORDER BY e.date DESC, e.id DESC
+                    LIMIT :record_limit OFFSET :record_offset
+                ');
+                foreach ($examParams as $name => $value) {
+                    $stmtRecords->bindValue(':' . $name, $value, PDO::PARAM_INT);
+                }
+                $stmtRecords->bindValue(':record_limit', $pagination['per_page'], PDO::PARAM_INT);
+                $stmtRecords->bindValue(':record_offset', $pagination['offset'], PDO::PARAM_INT);
+                $stmtRecords->execute();
+
+                $records = [];
+                foreach ($stmtRecords->fetchAll() as $row) {
+                    $maxScore = $row['max_score'] !== null
+                        ? (float)$row['max_score'] : (float)$row['total_points'];
+                    $score = $row['score'] !== null ? (float)$row['score'] : null;
+                    $records[] = [
+                        'id' => (int)$row['id'],
+                        'title' => (string)$row['title'],
+                        'date' => (string)$row['date'],
+                        'score' => $score,
+                        'max_score' => $maxScore,
+                        'percentage' => $score !== null && $maxScore > 0
+                            ? round(($score / $maxScore) * 100, 1) : null,
+                        'status' => $row['result_status'] !== null
+                            ? (string)$row['result_status'] : 'no_result',
+                        'submitted_at' => $row['submitted_at'] !== null
+                            ? (string)$row['submitted_at'] : null,
+                        'feedback' => $row['feedback'] !== null ? (string)$row['feedback'] : null,
+                    ];
+                }
+
+                unset($pagination['offset']);
+                Helper::sendJson([
+                    'success' => true,
+                    'section' => 'exams',
+                    'student_id' => $studentId,
+                    'records' => $records,
+                    'pagination' => $pagination,
+                ]);
+            }
+
+            if ($section === 'homeworks') {
+                $homeworkFrom = '
+                    FROM homeworks hw
+                    LEFT JOIN (
+                        SELECT homework_id, MAX(id) AS submission_id
+                        FROM student_homework_submissions
+                        WHERE student_id = :submission_sid AND teacher_id = :submission_tid
+                        GROUP BY homework_id
+                    ) latest_submission ON latest_submission.homework_id = hw.id
+                    LEFT JOIN student_homework_submissions shs
+                      ON shs.id = latest_submission.submission_id
+                     AND shs.teacher_id = :shs_tid
+                    WHERE hw.teacher_id = :homework_tid
+                      AND (hw.group_id = :group_id OR shs.id IS NOT NULL)
+                ';
+                $homeworkParams = [
+                    'submission_sid' => $studentId,
+                    'submission_tid' => $teacherId,
+                    'shs_tid' => $teacherId,
+                    'homework_tid' => $teacherId,
+                    'group_id' => $groupId,
+                ];
+                $stmtCount = $db->prepare('SELECT COUNT(*) AS c ' . $homeworkFrom);
+                $stmtCount->execute($homeworkParams);
+                $total = (int)($stmtCount->fetch()['c'] ?? 0);
+                $pagination = teacherStudentProfilePagination($total, $page);
+
+                $stmtRecords = $db->prepare('
+                    SELECT hw.id, hw.title, hw.description, hw.due_date,
+                           hw.max_grade, hw.created_at,
+                           shs.status AS submission_status, shs.submitted_at,
+                           shs.grade, shs.feedback
+                    ' . $homeworkFrom . '
+                    ORDER BY hw.due_date DESC, hw.id DESC
+                    LIMIT :record_limit OFFSET :record_offset
+                ');
+                foreach ($homeworkParams as $name => $value) {
+                    $stmtRecords->bindValue(':' . $name, $value, PDO::PARAM_INT);
+                }
+                $stmtRecords->bindValue(':record_limit', $pagination['per_page'], PDO::PARAM_INT);
+                $stmtRecords->bindValue(':record_offset', $pagination['offset'], PDO::PARAM_INT);
+                $stmtRecords->execute();
+
+                $records = [];
+                foreach ($stmtRecords->fetchAll() as $row) {
+                    $records[] = [
+                        'id' => (int)$row['id'],
+                        'title' => (string)$row['title'],
+                        'description' => (string)$row['description'],
+                        'created_at' => (string)$row['created_at'],
+                        'due_date' => (string)$row['due_date'],
+                        'status' => $row['submission_status'] !== null
+                            ? (string)$row['submission_status'] : 'no_submission',
+                        'submitted_at' => $row['submitted_at'] !== null
+                            ? (string)$row['submitted_at'] : null,
+                        'grade' => $row['grade'] !== null ? (float)$row['grade'] : null,
+                        'max_grade' => (float)$row['max_grade'],
+                        'feedback' => $row['feedback'] !== null ? (string)$row['feedback'] : null,
+                    ];
+                }
+
+                unset($pagination['offset']);
+                Helper::sendJson([
+                    'success' => true,
+                    'section' => 'homeworks',
+                    'student_id' => $studentId,
+                    'records' => $records,
+                    'pagination' => $pagination,
+                ]);
+            }
         }
 
         /* ------------------------------------------------------------
