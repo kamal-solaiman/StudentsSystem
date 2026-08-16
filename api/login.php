@@ -38,16 +38,28 @@ if (!AuthManager::checkRateLimit($identifier, $clientIp)) {
 try {
     $db = DatabaseConnection::fromConfigFile()->connect();
 
-    // Find user by email
+    // Find the account by email OR username.
+    //
+    // BUGFIX: this lookup previously bound a single `:identifier` marker twice.
+    // Native prepared statements are enabled globally (config/database.php sets
+    // PDO::ATTR_EMULATE_PREPARES => false), and PDO explicitly forbids reusing
+    // one named marker more than once unless emulation is on. MySQL therefore
+    // rejected EVERY login with SQLSTATE[HY093] "Invalid parameter number",
+    // the PDOException was swallowed by the catch-all below, and the browser
+    // received HTTP 500 "A system error occurred during login".
+    // Each marker must be unique, so bind the same value to two distinct names.
     $stmt = $db->prepare('
         SELECT u.*, t.id AS teacher_id, ts.teacher_id AS staff_teacher_id 
         FROM users u 
         LEFT JOIN teachers t ON u.id = t.user_id 
         LEFT JOIN teacher_staff ts ON u.id = ts.user_id 
-        WHERE (u.email = :identifier OR u.username = :identifier)
+        WHERE (u.email = :identifier_email OR u.username = :identifier_username)
         LIMIT 1
     ');
-    $stmt->execute(['identifier' => $identifier]);
+    $stmt->execute([
+        'identifier_email' => $identifier,
+        'identifier_username' => $identifier,
+    ]);
     $user = $stmt->fetch();
 
     if ($user === false) {

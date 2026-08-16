@@ -91,7 +91,13 @@ test('P every multi-record registration is atomic and rolls back on failure', ()
 });
 
 test('Q/R login supports newly registered username or email with existing password_verify', () => {
-  assert.match(login, /u\.email = :identifier OR u\.username = :identifier/);
+  // The lookup must still resolve BOTH the email and the username, but each
+  // named placeholder has to be unique: config/database.php disables emulated
+  // prepares, and MySQL rejects a marker reused within one native prepared
+  // statement with SQLSTATE[HY093], which broke every login with a 500.
+  assert.match(login, /u\.email = :identifier_email OR u\.username = :identifier_username/);
+  assert.match(login, /'identifier_email'\s*=>\s*\$identifier/);
+  assert.match(login, /'identifier_username'\s*=>\s*\$identifier/);
   assert.match(login, /password_verify/);
   assert.match(login, /AuthManager::loginUser/);
   assert.equal((login.match(/بيانات تسجيل الدخول غير صحيحة/g) || []).length, 2);

@@ -142,11 +142,15 @@ try {
         FROM homeworks hw 
         JOIN student_enrollments se ON hw.group_id = se.group_id 
         JOIN teachers t ON hw.teacher_id = t.id 
-        LEFT JOIN student_homework_submissions sub ON hw.id = sub.homework_id AND sub.student_id = :sid
-        WHERE se.student_id = :sid
+        LEFT JOIN student_homework_submissions sub ON hw.id = sub.homework_id AND sub.student_id = :sid_submission
+        WHERE se.student_id = :sid_enrollment
         ORDER BY hw.due_date DESC
     ');
-    $stmtHw->execute(['sid' => $studentId]);
+    // Native prepares are enabled, so each named marker must be unique.
+    $stmtHw->execute([
+        'sid_submission' => $studentId,
+        'sid_enrollment' => $studentId,
+    ]);
     $homeworks = $stmtHw->fetchAll();
 
     // Exams
