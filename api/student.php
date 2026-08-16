@@ -45,11 +45,8 @@ try {
         // Verify the requested student belongs to this parent
         if ($requestedStudentId <= 0) {
             // Find first child of this parent
-            $stmtChild = $db->prepare('SELECT id FROM students WHERE parent_user_id = :puid OR parent_phone = :pphone LIMIT 1');
-            $stmtChild->execute([
-                'puid' => $user['user_id'],
-                'pphone' => $user['phone']
-            ]);
+            $stmtChild = $db->prepare('SELECT id FROM students WHERE parent_user_id = :puid LIMIT 1');
+            $stmtChild->execute(['puid' => $user['user_id']]);
             $child = $stmtChild->fetch();
             if ($child === false) {
                 Helper::sendForbidden('No children found for this parent');
@@ -57,11 +54,10 @@ try {
             $studentId = (int)$child['id'];
         } else {
             // Verify this student belongs to the parent
-            $stmtVerify = $db->prepare('SELECT id FROM students WHERE id = :sid AND (parent_user_id = :puid OR parent_phone = :pphone) LIMIT 1');
+            $stmtVerify = $db->prepare('SELECT id FROM students WHERE id = :sid AND parent_user_id = :puid LIMIT 1');
             $stmtVerify->execute([
                 'sid' => $requestedStudentId,
-                'puid' => $user['user_id'],
-                'pphone' => $user['phone']
+                'puid' => $user['user_id']
             ]);
             $verified = $stmtVerify->fetch();
             if ($verified === false) {
@@ -109,10 +105,11 @@ try {
 
     // Subscriptions across Teachers (Multi-Tenant Unified Student link)
     $stmtSubs = $db->prepare('
-        SELECT se.*, t.name AS teacher_name, t.subject, t.center_name, t.phone,
+        SELECT se.*, t.name AS teacher_name, COALESCE(su.name, t.subject) AS subject, t.center_name, t.phone,
                sg.name AS group_name, sg.class_time, sg.study_days, sg.payment_scheme, sg.price 
         FROM student_enrollments se 
-        JOIN teachers t ON se.teacher_id = t.id 
+        JOIN teachers t ON se.teacher_id = t.id
+        LEFT JOIN subjects su ON su.id = t.subject_id
         JOIN study_groups sg ON se.group_id = sg.id 
         WHERE se.student_id = :sid
         ORDER BY se.id DESC
@@ -166,10 +163,11 @@ try {
 
     // Lesson Videos
     $stmtVideos = $db->prepare('
-        SELECT lv.*, t.name AS teacher_name, t.subject 
+        SELECT lv.*, t.name AS teacher_name, COALESCE(su.name, t.subject) AS subject
         FROM lesson_videos lv 
         JOIN student_enrollments se ON lv.group_id = se.group_id 
-        JOIN teachers t ON lv.teacher_id = t.id 
+        JOIN teachers t ON lv.teacher_id = t.id
+        LEFT JOIN subjects su ON su.id = t.subject_id
         WHERE se.student_id = :sid
         ORDER BY lv.id DESC
     ');

@@ -10,20 +10,34 @@ VALUES (1, 'منصة إدارة تعليم موحدة (Unified Education Platfor
 ON DUPLICATE KEY UPDATE `platform_name` = VALUES(`platform_name`);
 
 -- 2. Users (Super Admin, 2 Teachers, 1 Staff, 1 Parent, 2 Students)
-INSERT INTO `users` (`id`, `name`, `email`, `phone`, `password_hash`, `role`, `avatar`) VALUES
-(1, 'م. حسام العطار (مدير المنصة)', 'admin@platform.edu', '01000000001', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'super_admin', 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'),
-(2, 'أ. أحمد محمود (فيزياء)', 'ahmed@physics.edu', '01011111111', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'teacher', 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'),
-(3, 'أ. سارة عادل (رياضيات)', 'sara@math.edu', '01022222222', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'teacher', 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150'),
-(4, 'أ. خالد سامح (سكرتير ومساعد)', 'khaled@staff.edu', '01033333333', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'staff', 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150'),
-(5, 'م. محمد سعيد علي (ولي أمر)', 'parent@edu.com', '01099999999', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'parent', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150'),
-(6, 'يوسف محمد سعيد (ثالثة ثانوي)', 'youssef@student.edu', '01044444441', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'student', 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150'),
-(7, 'مريم محمد سعيد (أولى ثانوي)', 'mariam@student.edu', '01044444442', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'student', 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150')
+INSERT INTO `users` (`id`, `name`, `username`, `email`, `phone`, `password_hash`, `role`, `avatar`) VALUES
+(1, 'م. حسام العطار (مدير المنصة)', 'admin@platform.edu', 'admin@platform.edu', '01000000001', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'super_admin', 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'),
+(2, 'أ. أحمد محمود (فيزياء)', 'ahmed@physics.edu', 'ahmed@physics.edu', '01011111111', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'teacher', 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'),
+(3, 'أ. سارة عادل (رياضيات)', 'sara@math.edu', 'sara@math.edu', '01022222222', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'teacher', 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150'),
+(4, 'أ. خالد سامح (سكرتير ومساعد)', 'khaled@staff.edu', 'khaled@staff.edu', '01033333333', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'staff', 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150'),
+(5, 'م. محمد سعيد علي (ولي أمر)', 'parent@edu.com', 'parent@edu.com', '01099999999', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'parent', 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150'),
+(6, 'يوسف محمد سعيد (ثالثة ثانوي)', 'youssef@student.edu', 'youssef@student.edu', '01044444441', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'student', 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150'),
+(7, 'مريم محمد سعيد (أولى ثانوي)', 'mariam@student.edu', 'mariam@student.edu', '01044444442', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'student', 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150')
 ON DUPLICATE KEY UPDATE `name` = VALUES(`name`);
 
--- 3. Teachers Profiles (Multi-Tenant isolation spaces)
-INSERT INTO `teachers` (`id`, `user_id`, `name`, `center_name`, `phone`, `address`, `subject`, `price_per_student`) VALUES
-(1, 2, 'أ. أحمد محمود', 'سنتر النخبة التعليمي - الدقي', '01011111111', '15 شارع التحرير - الدقي - الجيزة', 'الفيزياء للثانوية العامة', 45.00),
-(2, 3, 'أ. سارة عادل', 'أكاديمية التفوق الرياضي - المعادي', '01022222222', '30 شارع النصر - المعادي - القاهرة', 'الرياضيات المتقدمة', 50.00)
+-- 3. Controlled Teaching Subjects
+INSERT INTO `subjects` (`id`, `name`, `normalized_name`, `status`) VALUES
+(1, 'رياضيات', 'رياضيات', 'active'),
+(2, 'اللغة العربية', 'اللغه العربيه', 'active'),
+(3, 'اللغة الإنجليزية', 'اللغه الانجليزيه', 'active'),
+(4, 'الفيزياء', 'الفيزياء', 'active'),
+(5, 'الكيمياء', 'الكيمياء', 'active'),
+(6, 'العلوم', 'العلوم', 'active'),
+(7, 'الدراسات الاجتماعية', 'الدراسات الاجتماعيه', 'active'),
+(8, 'الأحياء', 'الاحياء', 'active'),
+(9, 'التاريخ', 'التاريخ', 'active'),
+(10, 'الجغرافيا', 'الجغرافيا', 'active')
+ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `status` = VALUES(`status`);
+
+-- 4. Teachers Profiles (Multi-Tenant isolation spaces)
+INSERT INTO `teachers` (`id`, `user_id`, `name`, `center_name`, `phone`, `address`, `subject`, `subject_id`, `price_per_student`) VALUES
+(1, 2, 'أ. أحمد محمود', 'سنتر النخبة التعليمي - الدقي', '01011111111', '15 شارع التحرير - الدقي - الجيزة', 'الفيزياء للثانوية العامة', 4, 45.00),
+(2, 3, 'أ. سارة عادل', 'أكاديمية التفوق الرياضي - المعادي', '01022222222', '30 شارع النصر - المعادي - القاهرة', 'الرياضيات المتقدمة', 1, 50.00)
 ON DUPLICATE KEY UPDATE `center_name` = VALUES(`center_name`);
 
 -- 4. Teacher Staff

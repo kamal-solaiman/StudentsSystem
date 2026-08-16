@@ -13,11 +13,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $input = Helper::getJsonInput();
-$email = Helper::sanitizeString($input['email'] ?? null);
+// Existing clients still send `email`; the value may now be either the account
+// email or the unique username introduced for public registration.
+$identifier = strtolower(Helper::sanitizeString($input['email'] ?? null));
 $password = (string)($input['password'] ?? '');
 
 // Validate input
-if ($email === '' || $password === '') {
+if ($identifier === '' || $password === '') {
     Helper::sendJson(['success' => false, 'message' => 'Email and password are required'], 422);
 }
 
@@ -25,7 +27,7 @@ if ($email === '' || $password === '') {
 // Counters survive cookie deletion, private windows, new sessions and other
 // devices from the same source IP. Only FAILED attempts are recorded.
 $clientIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
-if (!AuthManager::checkRateLimit($email, $clientIp)) {
+if (!AuthManager::checkRateLimit($identifier, $clientIp)) {
     $retryAfter = ceil(AuthManager::getRateLimitWindow() / 60); // minutes
     Helper::sendJson([
         'success' => false,
@@ -42,16 +44,19 @@ try {
         FROM users u 
         LEFT JOIN teachers t ON u.id = t.user_id 
         LEFT JOIN teacher_staff ts ON u.id = ts.user_id 
-        WHERE u.email = :email 
+        WHERE (u.email = :identifier OR u.username = :identifier)
         LIMIT 1
     ');
-    $stmt->execute(['email' => $email]);
+    $stmt->execute(['identifier' => $identifier]);
     $user = $stmt->fetch();
 
     if ($user === false) {
-        // SECURITY (P1-D): record failed attempt (message does not reveal email existence)
-        AuthManager::recordFailedLoginAttempt($email, $clientIp);
-        Helper::sendJson(['success' => false, 'message' => 'Invalid credentials'], 401);
+        // Perform a real password verification against a fixed dummy hash so a
+        // missing identifier follows the same expensive path and external
+        // response as an existing account with a wrong password.
+        password_verify($password, '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi');
+        AuthManager::recordFailedLoginAttempt($identifier, $clientIp);
+        Helper::sendJson(['success' => false, 'message' => 'بيانات تسجيل الدخول غير صحيحة'], 401);
     }
 
     // SECURITY FIX: For staff users, use staff_teacher_id from teacher_staff table
@@ -63,12 +68,30 @@ try {
 
     if (!$passwordValid) {
         // SECURITY (P1-D): record failed attempt (message does not reveal email existence)
-        AuthManager::recordFailedLoginAttempt($email, $clientIp);
-        Helper::sendJson(['success' => false, 'message' => 'Invalid credentials'], 401);
+        AuthManager::recordFailedLoginAttempt($identifier, $clientIp);
+        Helper::sendJson(['success' => false, 'message' => 'بيانات تسجيل الدخول غير صحيحة'], 401);
+    }
+
+    // Status is server-controlled. A pending/rejected teacher never receives a
+    // session or tenant_teacher_id, so normal teacher APIs remain unreachable.
+    if (($user['account_status'] ?? 'active') === 'pending') {
+        Helper::sendJson([
+            'success' => false,
+            'message' => 'حساب المدرس في انتظار موافقة الإدارة ولا يمكن تسجيل الدخول حالياً.'
+        ], 403);
+    }
+    if (($user['account_status'] ?? 'active') === 'rejected') {
+        Helper::sendJson([
+            'success' => false,
+            'message' => 'تعذر تسجيل الدخول إلى هذا الحساب. يرجى التواصل مع إدارة المنصة.'
+        ], 403);
     }
 
     // Successful login - AuthManager will handle session regeneration and CSRF token
     AuthManager::loginUser($user);
+    // loginUser clears the canonical email counter; a username login may have
+    // a distinct limiter key, so clear the identifier used by this request too.
+    AuthManager::clearRateLimit($identifier);
 
     // Get the CSRF token for the frontend
     $csrfToken = AuthManager::getCsrfToken();

@@ -750,13 +750,19 @@ try {
     // GET: Fetch teacher dashboard data with complete Multi-Tenant isolation
     if ($method === 'GET') {
         // Teacher Profile
-        $stmtTeacher = $db->prepare('SELECT * FROM teachers WHERE id = :id LIMIT 1');
+        $stmtTeacher = $db->prepare("\n            SELECT t.*, COALESCE(s.name, t.subject) AS resolved_subject\n            FROM teachers t\n            LEFT JOIN subjects s ON s.id = t.subject_id\n            WHERE t.id = :id\n            LIMIT 1\n        ");
         $stmtTeacher->execute(['id' => $teacherId]);
         $teacher = $stmtTeacher->fetch();
 
         if ($teacher === false) {
             Helper::sendJson(['success' => false, 'error' => 'لم يتم العثور على المدرس في المنصة'], 404);
         }
+
+        $stmtSubjects = $db->query("SELECT id, name FROM subjects WHERE status = 'active' ORDER BY id ASC");
+        $activeSubjects = array_map(static fn(array $row): array => [
+            'id' => (int)$row['id'],
+            'name' => (string)$row['name'],
+        ], $stmtSubjects->fetchAll());
 
         // Academic Classes & Groups Count
         $stmtClasses = $db->prepare('
@@ -913,10 +919,12 @@ try {
                 'center_name' => (string)$teacher['center_name'],
                 'phone' => (string)$teacher['phone'],
                 'address' => (string)$teacher['address'],
-                'subject' => (string)$teacher['subject'],
+                'subject' => (string)$teacher['resolved_subject'],
+                'subject_id' => $teacher['subject_id'] !== null ? (int)$teacher['subject_id'] : null,
                 'price_per_student' => $pricePerSt,
                 'subscription_monthly' => $monthlySub
             ],
+            'subjects' => $activeSubjects,
             'classes' => $classes,
             'groups' => $groups,
             'students' => $students,
@@ -1683,11 +1691,12 @@ try {
             try {
                 // Student account in the SHARED users table (role = student).
                 $stmtUser = $db->prepare('
-                    INSERT INTO users (name, email, phone, password_hash, role)
-                    VALUES (:name, :email, :phone, :phash, \'student\')
+                    INSERT INTO users (name, username, email, phone, password_hash, role)
+                    VALUES (:name, :username, :email, :phone, :phash, \'student\')
                 ');
                 $stmtUser->execute([
                     'name' => $student['name'],
+                    'username' => $loginEmail,
                     'email' => $loginEmail,
                     'phone' => $student['phone'],
                     // P1-K: documented default password for teacher-created
@@ -1747,7 +1756,8 @@ try {
                 'student_id' => $studentId,
                 'student_code' => $studentCode,
                 'username' => $loginEmail,
-                'default_password' => teacherDefaultStudentPassword(),
+                // The documented default remains stored as a compatible hash,
+                // but credentials are never returned by an API response.
                 'group_name' => $group['name'],
                 'class_name' => $class['name']
             ]);
@@ -1966,11 +1976,26 @@ try {
             ]);
         }
 
-        // Update Teacher Settings
+        // Update Teacher Settings. subjects.id is authoritative; the legacy
+        // teachers.subject text is synchronized only as a compatibility cache.
         if ($action === 'update_teacher_settings') {
+            $subjectId = filter_var($payload['subject_id'] ?? null, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1]
+            ]);
+            if ($subjectId === false) {
+                Helper::sendJson(['success' => false, 'message' => 'المادة الدراسية مطلوبة'], 422);
+            }
+            $stmtSubject = $db->prepare("SELECT id, name FROM subjects WHERE id = :id AND status = 'active' LIMIT 1");
+            $stmtSubject->execute(['id' => $subjectId]);
+            $subject = $stmtSubject->fetch();
+            if ($subject === false) {
+                Helper::sendJson(['success' => false, 'message' => 'المادة الدراسية المختارة غير متاحة'], 422);
+            }
+
             $stmt = $db->prepare('
-                UPDATE teachers 
-                SET name = :name, center_name = :center, phone = :phone, address = :addr, subject = :subj, price_per_student = :price
+                UPDATE teachers
+                SET name = :name, center_name = :center, phone = :phone, address = :addr,
+                    subject_id = :subject_id, subject = :subject_compat, price_per_student = :price
                 WHERE id = :tid
             ');
             $stmt->execute([
@@ -1979,7 +2004,8 @@ try {
                 'center' => Helper::sanitizeString($payload['center_name'] ?? ''),
                 'phone' => Helper::sanitizeString($payload['phone'] ?? ''),
                 'addr' => Helper::sanitizeString($payload['address'] ?? ''),
-                'subj' => Helper::sanitizeString($payload['subject'] ?? ''),
+                'subject_id' => (int)$subject['id'],
+                'subject_compat' => (string)$subject['name'],
                 'price' => (float)($payload['price_per_student'] ?? 50.0)
             ]);
 

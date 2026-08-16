@@ -10,16 +10,37 @@ SET FOREIGN_KEY_CHECKS = 0;
 CREATE TABLE IF NOT EXISTS `users` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(150) NOT NULL,
+  `username` VARCHAR(150) NOT NULL,
   `email` VARCHAR(150) NOT NULL UNIQUE,
   `phone` VARCHAR(30) NOT NULL,
+  `registration_phone_key` VARCHAR(30) NULL DEFAULT NULL,
   `password_hash` VARCHAR(255) NOT NULL,
   `role` ENUM('super_admin', 'teacher', 'staff', 'student', 'parent') NOT NULL,
+  `account_status` ENUM('active', 'pending', 'rejected') NOT NULL DEFAULT 'active',
   `avatar` VARCHAR(255) NULL,
+  `date_of_birth` DATE NULL DEFAULT NULL,
+  `gender` ENUM('male', 'female') NULL DEFAULT NULL,
+  `address` VARCHAR(255) NULL DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_users_username` (`username`),
+  UNIQUE KEY `uq_users_registration_phone_key` (`registration_phone_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 2. Teachers Profile & Multi-Tenant Space (Active tenant isolation by teacher_id)
+-- 2. Controlled Teaching Subjects
+CREATE TABLE IF NOT EXISTS `subjects` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(100) NOT NULL,
+  `normalized_name` VARCHAR(100) NOT NULL,
+  `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_subjects_normalized_name` (`normalized_name`),
+  KEY `idx_subjects_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. Teachers Profile & Multi-Tenant Space (Active tenant isolation by teacher_id)
 CREATE TABLE IF NOT EXISTS `teachers` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `user_id` INT UNSIGNED NOT NULL,
@@ -29,10 +50,14 @@ CREATE TABLE IF NOT EXISTS `teachers` (
   `address` VARCHAR(255) NOT NULL,
   `logo` VARCHAR(255) NULL,
   `subject` VARCHAR(100) NOT NULL,
+  `subject_id` INT UNSIGNED NULL,
+  `bio` TEXT NULL,
   `price_per_student` DECIMAL(10,2) NOT NULL DEFAULT 50.00,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_teacher_user` (`user_id`),
+  KEY `idx_teacher_subject` (`subject_id`),
+  CONSTRAINT `fk_teacher_subject` FOREIGN KEY (`subject_id`) REFERENCES `subjects` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `fk_teacher_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -105,6 +130,7 @@ CREATE TABLE IF NOT EXISTS `students` (
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_student_code` (`student_code`),
+  UNIQUE KEY `uq_students_user_id` (`user_id`),
   KEY `idx_student_parent` (`parent_user_id`),
   KEY `idx_student_phone` (`phone`),
   KEY `idx_student_name` (`name`),

@@ -16,6 +16,16 @@ class SuperAdminController {
 
     let listHtml = '';
     teachers.forEach((t, index) => {
+      const statusLabels = { active: 'نشط', pending: 'بانتظار الموافقة', rejected: 'مرفوض' };
+      const statusClass = t.account_status === 'active' ? 'admin-status-active' : (t.account_status === 'pending' ? 'admin-status-pending' : 'admin-status-rejected');
+      const approvalActions = t.account_status === 'pending'
+        ? `<div class="admin-approval-actions">
+             <button type="button" class="btn btn-primary" data-teacher-approval="approve" data-teacher-id="${Number(t.id)}">موافقة</button>
+             <button type="button" class="btn btn-danger" data-teacher-approval="reject" data-teacher-id="${Number(t.id)}">رفض</button>
+           </div>`
+        : (t.account_status === 'rejected'
+          ? `<button type="button" class="btn btn-secondary" data-teacher-approval="approve" data-teacher-id="${Number(t.id)}">إعادة التفعيل</button>`
+          : '—');
       listHtml += `
         <tr style="border-bottom: 1px solid #e2e8f0;">
           <td style="padding: 1rem; font-weight: 800; color: #64748b;">#${index + 1}</td>
@@ -30,6 +40,8 @@ class SuperAdminController {
           <td style="padding: 1rem; font-weight: 800; color: #4f46e5;">${t.active_students} طلاب</td>
           <td style="padding: 1rem; font-weight: 700;">${t.price_per_student} ج.م</td>
           <td style="padding: 1rem; font-weight: 900; color: #059669;">${Number(t.subscription_monthly || 0).toLocaleString()} ج.م</td>
+          <td style="padding: 1rem;"><span class="admin-status ${statusClass}">${statusLabels[t.account_status] || 'غير معروف'}</span></td>
+          <td style="padding: 1rem;">${approvalActions}</td>
         </tr>
       `;
     });
@@ -38,7 +50,7 @@ class SuperAdminController {
     if (teachers.length === 0) {
       listHtml = `
         <tr>
-          <td colspan="8" style="padding: 1.5rem; text-align: center; color: #64748b;">
+          <td colspan="10" style="padding: 1.5rem; text-align: center; color: #64748b;">
             لا يوجد مدرسون مسجلون في المنصة حاليًا
           </td>
         </tr>
@@ -93,6 +105,7 @@ class SuperAdminController {
             <p style="font-size: 0.8rem; color: #64748b;">كل مدرس يمتلك مساحة مستقلة معزولة، ويتم احتساب اشتراكه بناءً على عدد الطلاب المسجلين لديه</p>
           </div>
         </div>
+        <p id="admin-approval-message" class="registration-message registration-message-error" aria-live="polite"></p>
         <div class="table-responsive">
           <table>
             <thead>
@@ -105,6 +118,8 @@ class SuperAdminController {
                 <th>الطلاب النشطون</th>
                 <th>سعر الطالب</th>
                 <th>الاشتراك الشهري</th>
+                <th>حالة الحساب</th>
+                <th>إجراءات الموافقة</th>
               </tr>
             </thead>
             <tbody>${listHtml}</tbody>
@@ -138,6 +153,23 @@ class SuperAdminController {
   }
 
   attachEventListeners() {
+    this.container.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-teacher-approval]');
+      if (!button || button.disabled) return;
+      const action = button.dataset.teacherApproval === 'approve' ? 'approve_teacher' : 'reject_teacher';
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      try {
+        await ApiClient.updateTeacherApproval(Number(button.dataset.teacherId), action);
+        if (this.onRefresh) await this.onRefresh();
+      } catch (error) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        const message = document.getElementById('admin-approval-message');
+        if (message) message.textContent = error.message || 'تعذر تحديث حالة حساب المدرس';
+      }
+    });
+
     const btnSave = document.getElementById('btn-save-saas-settings');
     if (btnSave) {
       btnSave.addEventListener('click', async () => {
