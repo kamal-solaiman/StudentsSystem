@@ -351,6 +351,58 @@ function collectStudentPayload(values) {
   };
 }
 
+/* ================================================================
+ * P1-L: Teacher student-profile display vocabulary.
+ * Values are labels for real schema/API states only; no mock/default records
+ * or client-computed substitute data are introduced.
+ * ================================================================ */
+const STUDENT_PROFILE_TABS = [
+  { value: 'overview', label: 'نظرة عامة' },
+  { value: 'attendance', label: 'الحضور والغياب' },
+  { value: 'exams', label: 'الامتحانات' },
+  { value: 'homeworks', label: 'الواجبات' },
+  { value: 'group', label: 'المجموعة' },
+  { value: 'payments', label: 'المدفوعات' }
+];
+
+const STUDENT_PROFILE_ATTENDANCE_LABELS = {
+  present: 'حاضر',
+  absent: 'غائب',
+  late: 'متأخر'
+};
+const STUDENT_PROFILE_ATTENDANCE_METHODS = {
+  dynamic_qr: 'QR المتغير',
+  id_scanner: 'كارنيه الطالب',
+  manual: 'تسجيل يدوي'
+};
+const STUDENT_PROFILE_EXAM_STATUS = {
+  graded: 'تم التصحيح',
+  pending: 'قيد التصحيح',
+  absent: 'غائب',
+  no_result: 'لا توجد نتيجة مسجلة'
+};
+const STUDENT_PROFILE_HOMEWORK_STATUS = {
+  submitted: 'تم التسليم',
+  graded: 'تم التقييم',
+  missing: 'لم يُسلّم',
+  no_submission: 'لا يوجد تسليم مسجل'
+};
+
+/** Format a stored SQL date/datetime without timezone conversion. */
+function formatStudentProfileDate(value, withTime = false) {
+  const raw = String(value || '').trim();
+  if (raw === '') return 'غير متاح';
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (!match) return raw;
+  const date = `${match[3]}/${match[2]}/${match[1]}`;
+  return withTime && match[4] ? `${date} — ${match[4]}:${match[5]}` : date;
+}
+
+function studentProfileDisplayValue(value) {
+  const text = String(value == null ? '' : value).trim();
+  return text === '' ? 'غير متاح' : text;
+}
+
 class TeacherController {
   constructor(containerElement, data, onRefreshCallback) {
     this.container = containerElement;
@@ -369,6 +421,11 @@ class TeacherController {
     // class-scoped query — the browser never receives a platform-wide dump.
     this.studentsMessage = null;
     this.studentSearch = null;
+    // P1-L: full teacher-scoped student profile. Overview is fetched once;
+    // history sections are lazy-loaded and cached independently.
+    this.studentProfile = null;
+    this._studentProfileRequestSeq = 0;
+    this._studentProfileSectionSeq = 0;
     // P1-K-FIX: the open student QR card modal (so a rapid double-click never
     // stacks multiple backdrops). null when no card is open.
     this._studentQrCard = null;
@@ -398,6 +455,20 @@ class TeacherController {
   render() {
     if (this.activeTab !== 'attendance' || this.attendanceMethod !== 'dynamic_qr') {
       this.closeQrPresentation();
+    }
+
+    // P1-L: the profile is a complete interface, not a modal stacked over the
+    // students table. Returning clears this state and restores the unchanged
+    // students search/list screen. A router navigation to another teacher tab
+    // also closes it instead of leaving a stale profile over that route.
+    if (this.studentProfile !== null && this.activeTab !== 'students') {
+      this._studentProfileRequestSeq += 1;
+      this.studentProfile = null;
+    }
+    if (this.studentProfile !== null) {
+      this.container.innerHTML = this.renderStudentProfile();
+      this.attachEventListeners();
+      return;
     }
 
     const teacher = this.data.teacher || {};
@@ -1261,6 +1332,517 @@ class TeacherController {
     });
   }
 
+  /* ================================================================
+   * P1-L: Full teacher-scoped student personal page.
+   * ================================================================ */
+
+  /** Open a profile by student id only; ownership is decided by the backend. */
+  async openStudentProfile(studentId) {
+    const id = Number(studentId);
+    if (!Number.isInteger(id) || id <= 0) {
+      this.showStudentsMessage('معرف الطالب غير صالح', true);
+      return;
+    }
+    if (this.studentProfile
+        && this.studentProfile.studentId === id
+        && this.studentProfile.state === 'ready') {
+      return; // no duplicate overview request
+    }
+
+    this.closeStudentQrCard();
+    const generation = ++this._studentProfileRequestSeq;
+    this.studentProfile = {
+      studentId: id,
+      generation,
+      state: 'loading',
+      error: null,
+      activeTab: 'overview',
+      overview: null,
+      sections: {}
+    };
+    this.render();
+
+    try {
+      const overview = await ApiClient.getTeacherStudentProfile(id, 'overview', 1);
+      if (!this.studentProfile || this.studentProfile.generation !== generation) return;
+      this.studentProfile.state = 'ready';
+      this.studentProfile.overview = overview;
+      this.studentProfile.error = null;
+    } catch (error) {
+      if (!this.studentProfile || this.studentProfile.generation !== generation) return;
+      this.studentProfile.state = 'error';
+      this.studentProfile.error = error;
+    }
+    this.render();
+  }
+
+  /** Return to the existing students list without re-fetching the dashboard. */
+  closeStudentProfile() {
+    this._studentProfileRequestSeq += 1; // invalidate an in-flight overview
+    this.studentProfile = null;
+    this.closeStudentQrCard();
+    this.render();
+  }
+
+  retryStudentProfile() {
+    const id = this.studentProfile ? this.studentProfile.studentId : 0;
+    this.studentProfile = null;
+    return this.openStudentProfile(id);
+  }
+
+  /** Switch tabs and lazy-load only the large history section requested. */
+  switchStudentProfileTab(tab) {
+    if (!this.studentProfile || this.studentProfile.state !== 'ready') return;
+    if (!STUDENT_PROFILE_TABS.some(item => item.value === tab)) return;
+    this.studentProfile.activeTab = tab;
+    this.render();
+    if (['attendance', 'exams', 'homeworks'].includes(tab)) {
+      this.loadStudentProfileSection(tab, 1);
+    }
+  }
+
+  /**
+   * Fetch one bounded history page. Ready pages are reused when the user moves
+   * between tabs, preventing repeated API calls without a refresh request.
+   */
+  async loadStudentProfileSection(section, page = 1, force = false) {
+    const profileState = this.studentProfile;
+    if (!profileState || profileState.state !== 'ready') return;
+    if (!['attendance', 'exams', 'homeworks'].includes(section)) return;
+    const wantedPage = Math.max(1, Number(page) || 1);
+    const current = profileState.sections[section];
+    if (!force && current
+        && (current.state === 'loading'
+          || (current.state === 'ready' && Number(current.data?.pagination?.page || 1) === wantedPage))) {
+      return;
+    }
+
+    const requestId = ++this._studentProfileSectionSeq;
+    profileState.sections[section] = {
+      state: 'loading',
+      error: null,
+      data: current && current.data ? current.data : null,
+      requestedPage: wantedPage,
+      requestId
+    };
+    this.render();
+
+    try {
+      const data = await ApiClient.getTeacherStudentProfile(
+        profileState.studentId,
+        section,
+        wantedPage
+      );
+      const live = this.studentProfile;
+      const liveSection = live && live.sections[section];
+      if (!live
+          || live.generation !== profileState.generation
+          || !liveSection
+          || liveSection.requestId !== requestId) return;
+      live.sections[section] = { state: 'ready', error: null, data, requestId };
+    } catch (error) {
+      const live = this.studentProfile;
+      const liveSection = live && live.sections[section];
+      if (!live
+          || live.generation !== profileState.generation
+          || !liveSection
+          || liveSection.requestId !== requestId) return;
+      live.sections[section] = {
+        state: 'error', error, data: liveSection.data, requestedPage: wantedPage, requestId
+      };
+    }
+    this.render();
+  }
+
+  renderStudentProfileError(error) {
+    const info = this.describeApiError(error);
+    const loginButton = error && error.status === 401
+      ? '<button class="btn btn-secondary" data-action="goto-login">تسجيل الدخول</button>'
+      : '';
+    return `
+      <section class="student-profile-page" dir="rtl">
+        <button class="student-profile-back" data-action="close-student-profile">← العودة للطلاب</button>
+        <div class="student-profile-state-card student-profile-state-error" role="alert">
+          <div class="student-profile-state-icon" aria-hidden="true">!</div>
+          <h2>${escapeStudentText(info.title)}</h2>
+          <p>${escapeStudentText(info.message)}</p>
+          <div class="student-profile-state-actions">
+            <button class="btn btn-primary" data-action="retry-student-profile">إعادة المحاولة</button>
+            ${loginButton}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  /** Entire profile interface (header, quick stats, tabs and active section). */
+  renderStudentProfile() {
+    const state = this.studentProfile;
+    if (!state) return '';
+    if (state.state === 'loading') {
+      return `
+        <section class="student-profile-page" dir="rtl">
+          <button class="student-profile-back" data-action="close-student-profile">← العودة للطلاب</button>
+          <div class="student-profile-state-card" aria-live="polite">
+            <div class="student-profile-spinner" aria-hidden="true"></div>
+            <h2>جارٍ تحميل الصفحة الشخصية</h2>
+            <p>يتم التحقق من صلاحية الوصول وتحميل بيانات الطالب...</p>
+          </div>
+        </section>
+      `;
+    }
+    if (state.state === 'error' || !state.overview || !state.overview.profile) {
+      return this.renderStudentProfileError(state.error);
+    }
+
+    const profile = state.overview.profile;
+    const student = profile.student || {};
+    const enrollment = profile.enrollment || {};
+    const academicClass = profile.class || {};
+    const group = profile.group || {};
+    const attendance = state.overview.summaries?.attendance || {};
+    const initial = String(student.name || 'ط').trim().charAt(0) || 'ط';
+    const activeTab = state.activeTab || 'overview';
+    const tabButtons = STUDENT_PROFILE_TABS.map(tab => `
+      <button class="student-profile-tab ${activeTab === tab.value ? 'active' : ''}"
+              data-action="student-profile-tab" data-profile-tab="${tab.value}"
+              aria-selected="${activeTab === tab.value ? 'true' : 'false'}">
+        ${tab.label}
+      </button>
+    `).join('');
+
+    return `
+      <section class="student-profile-page" dir="rtl">
+        <button class="student-profile-back" data-action="close-student-profile">← العودة للطلاب</button>
+
+        <div class="student-profile-hero">
+          <div class="student-profile-identity">
+            <div class="student-profile-avatar" aria-hidden="true">${escapeStudentText(initial)}</div>
+            <div>
+              <span class="badge badge-emerald">الصفحة الشخصية للطالب</span>
+              <h2>${escapeStudentText(studentProfileDisplayValue(student.name))}</h2>
+              <div class="student-profile-meta">
+                <span class="student-profile-code">${escapeStudentText(studentProfileDisplayValue(student.student_code))}</span>
+                <span>${escapeStudentText(studentProfileDisplayValue(academicClass.name))}</span>
+                <span>${escapeStudentText(studentProfileDisplayValue(group.name))}</span>
+                <span class="student-profile-active-status">نشط</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn student-profile-qr-button" data-action="show-qr" data-id="${Number(student.id)}">
+            عرض كارنية QR
+          </button>
+        </div>
+
+        <div class="student-profile-stats" aria-label="إحصائيات الحضور">
+          ${this.renderStudentProfileStat('الحضور', attendance.present_count || 0, 'present')}
+          ${this.renderStudentProfileStat('الغياب', attendance.absent_count || 0, 'absent')}
+          ${this.renderStudentProfileStat('التأخير', attendance.late_count || 0, 'late')}
+          ${this.renderStudentProfileStat('نسبة الحضور', `${Number(attendance.attendance_rate || 0)}%`, 'rate')}
+        </div>
+
+        <div class="student-profile-tabs" role="tablist" aria-label="أقسام ملف الطالب">
+          ${tabButtons}
+        </div>
+
+        <div class="student-profile-content" role="tabpanel">
+          ${this.renderStudentProfileActiveSection(activeTab, profile, state.overview)}
+        </div>
+      </section>
+    `;
+  }
+
+  renderStudentProfileStat(label, value, kind) {
+    return `
+      <div class="student-profile-stat student-profile-stat-${kind}">
+        <span>${escapeStudentText(label)}</span>
+        <strong>${escapeStudentText(value)}</strong>
+      </div>
+    `;
+  }
+
+  renderStudentProfileActiveSection(tab, profile, overview) {
+    if (tab === 'overview') return this.renderStudentProfileOverview(profile, overview);
+    if (tab === 'group') return this.renderStudentProfileGroup(profile);
+    if (tab === 'payments') return this.renderStudentProfilePayments(overview.payments);
+    return this.renderStudentProfileHistory(tab);
+  }
+
+  renderStudentProfileInfoItem(label, value, wide = false) {
+    return `
+      <div class="student-profile-info-item ${wide ? 'wide' : ''}">
+        <span>${escapeStudentText(label)}</span>
+        <strong>${escapeStudentText(studentProfileDisplayValue(value))}</strong>
+      </div>
+    `;
+  }
+
+  renderStudentProfileOverview(profile, overview) {
+    const student = profile.student || {};
+    const enrollment = profile.enrollment || {};
+    const academicClass = profile.class || {};
+    const group = profile.group || {};
+    const exams = overview.summaries?.exams || {};
+    const homeworks = overview.summaries?.homeworks || {};
+    const gender = student.gender === 'male' ? 'ذكر' : (student.gender === 'female' ? 'أنثى' : 'غير متاح');
+    const enrollmentStatus = enrollment.status === 'active' ? 'نشط' : 'غير نشط';
+
+    return `
+      <div class="student-profile-overview-grid">
+        <article class="student-profile-panel">
+          <div class="student-profile-panel-heading">
+            <div>
+              <span class="student-profile-eyebrow">البيانات الأساسية</span>
+              <h3>معلومات الطالب</h3>
+            </div>
+          </div>
+          <div class="student-profile-info-grid">
+            ${this.renderStudentProfileInfoItem('اسم الطالب', student.name)}
+            ${this.renderStudentProfileInfoItem('كود الطالب', student.student_code)}
+            ${this.renderStudentProfileInfoItem('رقم الهاتف', student.phone)}
+            ${this.renderStudentProfileInfoItem('البريد الإلكتروني', student.email)}
+            ${this.renderStudentProfileInfoItem('هاتف ولي الأمر', student.parent_phone)}
+            ${this.renderStudentProfileInfoItem('النوع', gender)}
+            ${this.renderStudentProfileInfoItem('تاريخ الميلاد', student.date_of_birth ? formatStudentProfileDate(student.date_of_birth) : null)}
+            ${this.renderStudentProfileInfoItem('تاريخ التسجيل في المنصة', student.platform_registered_at ? formatStudentProfileDate(student.platform_registered_at) : null)}
+            ${this.renderStudentProfileInfoItem('العنوان', student.address, true)}
+          </div>
+        </article>
+
+        <article class="student-profile-panel">
+          <div class="student-profile-panel-heading">
+            <div>
+              <span class="student-profile-eyebrow">علاقة الطالب بهذا المدرس</span>
+              <h3>الصف والمجموعة الحالية</h3>
+            </div>
+          </div>
+          <div class="student-profile-info-grid">
+            ${this.renderStudentProfileInfoItem('تاريخ الانضمام للمدرس', formatStudentProfileDate(enrollment.enrollment_date))}
+            ${this.renderStudentProfileInfoItem('الحالة لدى المدرس', enrollmentStatus)}
+            ${this.renderStudentProfileInfoItem('الصف الدراسي الحالي', academicClass.name)}
+            ${this.renderStudentProfileInfoItem('المجموعة الحالية', group.name)}
+            ${this.renderStudentProfileInfoItem('تاريخ الانضمام للمجموعة', 'غير متاح في النظام الحالي', true)}
+          </div>
+        </article>
+      </div>
+
+      <div class="student-profile-summary-grid">
+        <article class="student-profile-summary-card">
+          <span class="student-profile-eyebrow">ملخص الامتحانات</span>
+          <strong>${Number(exams.total_exams || 0)} امتحان</strong>
+          <p>${Number(exams.graded_count || 0)} تم تصحيحه${exams.average_percentage == null ? '' : ` • متوسط ${Number(exams.average_percentage)}%`}</p>
+          <button data-action="student-profile-tab" data-profile-tab="exams">عرض الكل</button>
+        </article>
+        <article class="student-profile-summary-card">
+          <span class="student-profile-eyebrow">ملخص الواجبات</span>
+          <strong>${Number(homeworks.total_homeworks || 0)} واجب</strong>
+          <p>${Number(homeworks.submitted_count || 0)} تم تسليمه • ${Number(homeworks.graded_count || 0)} تم تقييمه</p>
+          <button data-action="student-profile-tab" data-profile-tab="homeworks">عرض الكل</button>
+        </article>
+        <article class="student-profile-summary-card">
+          <span class="student-profile-eyebrow">سجل الحضور</span>
+          <strong>${Number(overview.summaries?.attendance?.total_records || 0)} سجل</strong>
+          <p>السجلات خاصة بهذا المدرس فقط</p>
+          <button data-action="student-profile-tab" data-profile-tab="attendance">عرض الكل</button>
+        </article>
+      </div>
+    `;
+  }
+
+  renderStudentProfileGroup(profile) {
+    const group = profile.group || {};
+    const academicClass = profile.class || {};
+    const days = Array.isArray(group.study_days) && group.study_days.length > 0
+      ? group.study_days.join('، ')
+      : null;
+    const paymentScheme = group.payment_scheme === 'monthly'
+      ? 'شهري'
+      : (group.payment_scheme === 'per_session' ? 'لكل حصة' : null);
+    const price = Number.isFinite(Number(group.price))
+      ? `${Number(group.price).toLocaleString('ar-EG')} ج.م`
+      : null;
+
+    return `
+      <article class="student-profile-panel student-profile-panel-single">
+        <div class="student-profile-panel-heading">
+          <div>
+            <span class="student-profile-eyebrow">المجموعة الحالية لدى هذا المدرس</span>
+            <h3>${escapeStudentText(studentProfileDisplayValue(group.name))}</h3>
+          </div>
+        </div>
+        <div class="student-profile-info-grid">
+          ${this.renderStudentProfileInfoItem('اسم المجموعة', group.name)}
+          ${this.renderStudentProfileInfoItem('الصف الدراسي', academicClass.name)}
+          ${this.renderStudentProfileInfoItem('أيام الدراسة', days)}
+          ${this.renderStudentProfileInfoItem('موعد الحصة', formatGroupTimeRange(group))}
+          ${this.renderStudentProfileInfoItem('السعر', price)}
+          ${this.renderStudentProfileInfoItem('نظام الدفع', paymentScheme)}
+        </div>
+      </article>
+    `;
+  }
+
+  renderStudentProfilePayments(payments) {
+    const message = payments && payments.message
+      ? payments.message
+      : 'البيانات المالية غير متاحة حاليًا';
+    return `
+      <div class="student-profile-unavailable">
+        <div aria-hidden="true">ج.م</div>
+        <h3>${escapeStudentText(message)}</h3>
+        <p>لا يوجد في النظام الحالي جدول لسجلات الدفع أو المبالغ المدفوعة والمتبقية وتواريخها. لذلك لن يتم عرض بيانات تقديرية أو وهمية.</p>
+      </div>
+    `;
+  }
+
+  renderStudentProfileHistory(section) {
+    const state = this.studentProfile?.sections?.[section];
+    if (!state || state.state === 'loading') {
+      return `
+        <div class="student-profile-state-card student-profile-section-state" aria-live="polite">
+          <div class="student-profile-spinner" aria-hidden="true"></div>
+          <h3>جارٍ تحميل البيانات...</h3>
+        </div>
+      `;
+    }
+    if (state.state === 'error') {
+      const info = this.describeApiError(state.error);
+      return `
+        <div class="student-profile-state-card student-profile-section-state student-profile-state-error" role="alert">
+          <div class="student-profile-state-icon" aria-hidden="true">!</div>
+          <h3>${escapeStudentText(info.title)}</h3>
+          <p>${escapeStudentText(info.message)}</p>
+          <button class="btn btn-primary" data-action="retry-student-profile-section" data-profile-section="${section}">إعادة المحاولة</button>
+        </div>
+      `;
+    }
+    if (section === 'attendance') return this.renderStudentProfileAttendance(state.data);
+    if (section === 'exams') return this.renderStudentProfileExams(state.data);
+    return this.renderStudentProfileHomeworks(state.data);
+  }
+
+  renderStudentProfilePagination(section, pagination) {
+    const page = Number(pagination?.page || 1);
+    const totalPages = Number(pagination?.total_pages || 1);
+    const total = Number(pagination?.total || 0);
+    if (totalPages <= 1) {
+      return `<p class="student-profile-result-count">إجمالي السجلات: ${total}</p>`;
+    }
+    return `
+      <div class="student-profile-pagination">
+        <button class="btn btn-secondary" data-action="student-profile-page" data-profile-section="${section}" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>السابق</button>
+        <span>صفحة ${page} من ${totalPages} • ${total} سجل</span>
+        <button class="btn btn-secondary" data-action="student-profile-page" data-profile-section="${section}" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>التالي</button>
+      </div>
+    `;
+  }
+
+  renderStudentProfileAttendance(data) {
+    const records = Array.isArray(data?.records) ? data.records : [];
+    const rows = records.length === 0
+      ? this.renderEmptyRow(7, 'لا توجد سجلات حضور لهذا الطالب لدى هذا المدرس')
+      : records.map(record => {
+          const status = STUDENT_PROFILE_ATTENDANCE_LABELS[record.status] || record.status;
+          const method = STUDENT_PROFILE_ATTENDANCE_METHODS[record.method] || record.method;
+          return `
+            <tr>
+              <td>${escapeStudentText(formatStudentProfileDate(record.date))}</td>
+              <td><span class="student-profile-record-status status-${escapeStudentText(record.status)}">${escapeStudentText(status)}</span></td>
+              <td>${escapeStudentText(studentProfileDisplayValue(record.arrival_time))}</td>
+              <td>${escapeStudentText(studentProfileDisplayValue(record.departure_time))}</td>
+              <td>${Number(record.late_minutes || 0)} دقيقة</td>
+              <td>${escapeStudentText(studentProfileDisplayValue(method))}</td>
+              <td>${escapeStudentText(studentProfileDisplayValue(record.notes))}</td>
+            </tr>
+          `;
+        }).join('');
+    return `
+      <div class="student-profile-table-card">
+        <div class="student-profile-table-heading">
+          <div><span class="student-profile-eyebrow">خاص بهذا المدرس</span><h3>سجل الحضور والغياب</h3></div>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>التاريخ</th><th>الحالة</th><th>وقت الحضور</th><th>وقت الانصراف</th><th>التأخير</th><th>طريقة التسجيل</th><th>ملاحظات</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${this.renderStudentProfilePagination('attendance', data?.pagination)}
+      </div>
+    `;
+  }
+
+  renderStudentProfileExams(data) {
+    const records = Array.isArray(data?.records) ? data.records : [];
+    const rows = records.length === 0
+      ? this.renderEmptyRow(7, 'لا توجد امتحانات مرتبطة بهذا الطالب لدى هذا المدرس')
+      : records.map(record => {
+          const status = STUDENT_PROFILE_EXAM_STATUS[record.status] || record.status;
+          const score = record.score == null ? 'غير متاح' : Number(record.score);
+          const maxScore = record.max_score == null ? 'غير متاح' : Number(record.max_score);
+          const percentage = record.percentage == null ? 'غير متاح' : `${Number(record.percentage)}%`;
+          return `
+            <tr>
+              <td style="font-weight:800;">${escapeStudentText(record.title)}</td>
+              <td>${escapeStudentText(formatStudentProfileDate(record.date))}</td>
+              <td>${escapeStudentText(score)}</td>
+              <td>${escapeStudentText(maxScore)}</td>
+              <td>${escapeStudentText(percentage)}</td>
+              <td><span class="student-profile-record-status status-${escapeStudentText(record.status)}">${escapeStudentText(status)}</span></td>
+              <td>${escapeStudentText(studentProfileDisplayValue(record.feedback))}</td>
+            </tr>
+          `;
+        }).join('');
+    return `
+      <div class="student-profile-table-card">
+        <div class="student-profile-table-heading"><div><span class="student-profile-eyebrow">نتائج الطالب</span><h3>الامتحانات</h3></div></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>اسم الامتحان</th><th>التاريخ</th><th>الدرجة</th><th>الدرجة النهائية</th><th>النسبة</th><th>الحالة</th><th>ملاحظات</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${this.renderStudentProfilePagination('exams', data?.pagination)}
+      </div>
+    `;
+  }
+
+  renderStudentProfileHomeworks(data) {
+    const records = Array.isArray(data?.records) ? data.records : [];
+    const rows = records.length === 0
+      ? this.renderEmptyRow(8, 'لا توجد واجبات مرتبطة بهذا الطالب لدى هذا المدرس')
+      : records.map(record => {
+          const status = STUDENT_PROFILE_HOMEWORK_STATUS[record.status] || record.status;
+          const grade = record.grade == null
+            ? 'غير متاح'
+            : `${Number(record.grade)} / ${Number(record.max_grade || 0)}`;
+          return `
+            <tr>
+              <td style="font-weight:800;">${escapeStudentText(record.title)}</td>
+              <td>${escapeStudentText(formatStudentProfileDate(record.created_at))}</td>
+              <td>${escapeStudentText(formatStudentProfileDate(record.due_date))}</td>
+              <td><span class="student-profile-record-status status-${escapeStudentText(record.status)}">${escapeStudentText(status)}</span></td>
+              <td>${escapeStudentText(record.submitted_at ? formatStudentProfileDate(record.submitted_at, true) : 'غير متاح')}</td>
+              <td>${escapeStudentText(grade)}</td>
+              <td>${escapeStudentText(studentProfileDisplayValue(record.feedback))}</td>
+              <td>${escapeStudentText(studentProfileDisplayValue(record.description))}</td>
+            </tr>
+          `;
+        }).join('');
+    return `
+      <div class="student-profile-table-card">
+        <div class="student-profile-table-heading"><div><span class="student-profile-eyebrow">تكليفات المجموعة</span><h3>الواجبات</h3></div></div>
+        <div class="table-responsive">
+          <table>
+            <thead><tr><th>اسم الواجب</th><th>تاريخ الإنشاء</th><th>موعد التسليم</th><th>الحالة</th><th>تاريخ التسليم</th><th>الدرجة</th><th>الملاحظات</th><th>الوصف</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${this.renderStudentProfilePagination('homeworks', data?.pagination)}
+      </div>
+    `;
+  }
+
   /**
    * P1-K-FIX: "عرض كارنيه QR" — open a printable Student ID card.
    *
@@ -1486,7 +2068,7 @@ class TeacherController {
           <td style="padding: 1rem;">${s.phone}</td>
           <td style="padding: 1rem;">${s.parent_phone}</td>
           <td style="padding: 1rem;">
-            <button class="btn btn-primary btn-sm" data-action="show-qr" data-id="${s.id}">عرض كارنيه QR</button>
+            <button class="btn btn-primary btn-sm" data-action="open-student-profile" data-id="${s.id}">الصفحة الشخصية</button>
           </td>
           <td style="padding: 1rem;">
             <div style="display: flex; gap: 0.5rem;">
@@ -1561,7 +2143,7 @@ class TeacherController {
                 <th>المجموعة</th>
                 <th>هاتف الطالب</th>
                 <th>هاتف ولي الأمر</th>
-                <th>كارنيه الحضور</th>
+                <th>ملف الطالب</th>
                 <th>الإجراءات</th>
               </tr>
             </thead>
@@ -2923,6 +3505,36 @@ class TeacherController {
     this.container.querySelectorAll('[data-action="clear-student-search"]').forEach(btn => {
       btn.addEventListener('click', () => this.clearStudentSearch());
     });
+
+    // P1-L: profile navigation. Only student_id is read from the list; no
+    // student attributes or teacher_id are trusted from the DOM.
+    this.container.querySelectorAll('[data-action="open-student-profile"]').forEach(btn => {
+      btn.addEventListener('click', () => this.openStudentProfile(Number(btn.dataset.id)));
+    });
+    this.container.querySelectorAll('[data-action="close-student-profile"]').forEach(btn => {
+      btn.addEventListener('click', () => this.closeStudentProfile());
+    });
+    this.container.querySelectorAll('[data-action="retry-student-profile"]').forEach(btn => {
+      btn.addEventListener('click', () => this.retryStudentProfile());
+    });
+    this.container.querySelectorAll('[data-action="student-profile-tab"]').forEach(btn => {
+      btn.addEventListener('click', () => this.switchStudentProfileTab(btn.dataset.profileTab));
+    });
+    this.container.querySelectorAll('[data-action="retry-student-profile-section"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const section = btn.dataset.profileSection;
+        const page = this.studentProfile?.sections?.[section]?.requestedPage || 1;
+        this.loadStudentProfileSection(section, page, true);
+      });
+    });
+    this.container.querySelectorAll('[data-action="student-profile-page"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!btn.disabled) {
+          this.loadStudentProfileSection(btn.dataset.profileSection, Number(btn.dataset.page));
+        }
+      });
+    });
+
     // P1-K-FIX: "عرض كارنيه QR" — open the student ID card. The student is
     // resolved BY ID from the server-scoped list (never from arbitrary DOM
     // data and never by any teacher_id).

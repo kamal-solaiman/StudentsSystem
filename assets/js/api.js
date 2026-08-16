@@ -247,6 +247,23 @@ class ApiClient {
   }
 
   /**
+   * P1-L: Load one section of the teacher-scoped student profile.
+   * teacher_id is intentionally absent: the backend derives it exclusively
+   * from tenant_teacher_id in the authenticated session and re-verifies the
+   * active enrollment on every overview/history request.
+   */
+  static async getTeacherStudentProfile(studentId, section = 'overview', page = 1) {
+    return this.request('teacher.php', 'POST', {
+      action: 'student_profile',
+      payload: {
+        student_id: Number(studentId),
+        section: String(section || 'overview'),
+        page: Number(page) || 1
+      }
+    });
+  }
+
+  /**
    * Remove the student FROM MY LIST ONLY (hide/unlink). The global student
    * record, their account and other teachers' links are never touched.
    */
