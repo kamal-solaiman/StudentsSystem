@@ -54,12 +54,12 @@ Central Permission System: config/auth.php:147-190
 DOCUMENTATION FILES CREATED
 ================================================================================
 
-1. FINAL_REPORT.md              - Complete verification report
+1. docs/FINAL_REPORT.md              - Complete verification report
 2. CODE_EVIDENCE.txt             - Exact code snippets for each test
-3. PHASE_2_1_TEST_RESULTS.md     - Detailed test results
+3. docs/PHASE_2_1_TEST_RESULTS.md     - Detailed test results
 4. PHASE_2_1_SUMMARY.txt         - Quick summary
 5. test_negative_permissions.php - Executable test script
-6. PHASE_2_1_NEGATIVE_PERMISSION_TESTS.md - Full documentation
+6. docs/PHASE_2_1_NEGATIVE_PERMISSION_TESTS.md - Full documentation
 
 ================================================================================
 TEST SCRIPT FOR LIVE EXECUTION
