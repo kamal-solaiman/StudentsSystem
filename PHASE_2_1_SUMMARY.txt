@@ -144,13 +144,13 @@ The script will:
 DOCUMENTATION FILES CREATED
 ================================================================================
 
-1. PHASE_2_1_NEGATIVE_PERMISSION_TESTS.md
+1. docs/PHASE_2_1_NEGATIVE_PERMISSION_TESTS.md
    - Complete documentation of verification process
    - Code analysis details
    - Test script with usage instructions
    - Manual test procedures
 
-2. PHASE_2_1_TEST_RESULTS.md
+2. docs/PHASE_2_1_TEST_RESULTS.md
    - Detailed test results table
    - Evidence for each test
    - File locations and line numbers
